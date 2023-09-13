@@ -4,11 +4,11 @@
  * Copyright (C) 2010 Creytiv.com
  */
 #include <string.h>
+#include <math.h>
 #include <re_types.h>
 #include <re_sa.h>
 #include <re_fmt.h>
 #include <re_mem.h>
-#include <math.h>
 #ifdef _MSC_VER
 #include <float.h>
 #ifndef isinf
@@ -26,11 +26,15 @@
 #define isnan(a) isnand((a))
 #endif
 
+#define DEBUG_MODULE "print"
+#define DEBUG_LEVEL 5
+#include <re_dbg.h>
 
 enum length_modifier {
 	LENMOD_NONE      = 0,
 	LENMOD_LONG      = 1,
 	LENMOD_LONG_LONG = 2,
+	LENMOD_INT64     = 3,
 	LENMOD_SIZE      = 42,
 };
 
@@ -219,6 +223,10 @@ static int vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg,
 		case 'i':
 			switch (lenmod) {
 
+			case LENMOD_INT64:
+				RE_VA_ARG(ap, sn, int64_t, safe);
+				break;
+
 			case LENMOD_SIZE:
 				RE_VA_ARG(ap, sn, ssize_t, safe);
 				break;
@@ -335,6 +343,10 @@ static int vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg,
 		case 'u':
 			switch (lenmod) {
 
+			case LENMOD_INT64:
+				RE_VA_ARG(ap, n, uint64_t, safe);
+				break;
+
 			case LENMOD_SIZE:
 				RE_VA_ARG(ap, n, size_t, safe);
 				break;
@@ -397,6 +409,11 @@ static int vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg,
 
 		case 'z':
 			lenmod = LENMOD_SIZE;
+			fm = true;
+			break;
+
+		case 'L':
+			lenmod = LENMOD_INT64;
 			fm = true;
 			break;
 
@@ -475,6 +492,17 @@ static int vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg,
 		err |= vph(p0, p - p0, arg);
 
 out:
+#ifndef RELEASE
+	if (err == ENODATA) {
+		DEBUG_WARNING("Format: \"%b<-- NO ARG\n", fmt, p - fmt + 1);
+		re_assert(0 && "RE_VA_ARG: no more arguments");
+	}
+	if (err == EOVERFLOW) {
+		DEBUG_WARNING("Format: \"%b<-- SIZE ERROR\n", fmt,
+			      p - fmt + 1);
+		re_assert(0 && "RE_VA_ARG: arg is not compatible");
+	}
+#endif
 	return err;
 }
 
@@ -500,6 +528,7 @@ out:
  *   %H  (re_printf_h *, void *) Print handler with argument
  *   %v  (char *fmt, va_list *)  Variable argument list
  *   %m  (int)                   Describe an error code
+ *   %L  (uint64_t/int64_t)      64-bit length modifier for %i, %d, %x and %u
  * </pre>
  *
  * Reserved for the future:

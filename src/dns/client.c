@@ -32,7 +32,7 @@
 
 
 enum {
-	NTX_MAX = 20,
+	NTX_MAX = 4,
 	QUERY_HASH_SIZE = 16,
 	TCP_HASH_SIZE = 2,
 	CONN_TIMEOUT = 10 * 1000,
@@ -88,7 +88,9 @@ struct dnsquery {
 	char *name;
 	uint16_t type;
 	uint16_t dnsclass;
+	struct list *rrlv;
 	bool cache;
+	struct dnsc *dnsc; /* parent */
 };
 
 
@@ -696,15 +698,17 @@ static void udp_timeout_handler(void *arg)
 	struct dns_query *q = arg;
 	int err = ETIMEDOUT;
 
-	if (q->ntx >= NTX_MAX)
+	if (q->ntx >= NTX_MAX * *q->srvc)
 		goto out;
 
 	err = send_udp(q);
 	if (err)
 		goto out;
 
-	tmr_start(&q->tmr, 1000<<MIN(2, q->ntx - 2),
-		  udp_timeout_handler, q);
+	int timeout = 500 << MIN(2, (q->ntx - 1) / *q->srvc);
+
+	DEBUG_INFO("waiting udp timeout: %dms\n", timeout);
+	tmr_start(&q->tmr, timeout, udp_timeout_handler, q);
 
  out:
 	if (err) {
@@ -794,7 +798,7 @@ static bool getaddr_dup(struct le *le, void *arg)
 
 static int async_getaddrinfo(void *arg)
 {
-	struct dns_query *q = arg;
+	struct dnsquery *dq = arg;
 	int err;
 	struct addrinfo *res0 = NULL;
 	struct addrinfo *res;
@@ -803,13 +807,13 @@ static int async_getaddrinfo(void *arg)
 
 	memset(&hints, 0, sizeof(hints));
 
-	if (q->type == DNS_TYPE_A)
+	if (dq->type == DNS_TYPE_A)
 		hints.ai_family = AF_INET;
-	if (q->type == DNS_TYPE_AAAA)
+	if (dq->type == DNS_TYPE_AAAA)
 		hints.ai_family = AF_INET6;
 	hints.ai_flags = AI_ADDRCONFIG;
 
-	err = getaddrinfo(q->name, NULL, &hints, &res0);
+	err = getaddrinfo(dq->name, NULL, &hints, &res0);
 	if (err)
 		return EADDRNOTAVAIL;
 
@@ -822,7 +826,7 @@ static int async_getaddrinfo(void *arg)
 			goto out;
 		}
 
-		str_dup(&rr->name, q->name);
+		str_dup(&rr->name, dq->name);
 
 		rr->dnsclass = DNS_CLASS_IN;
 		rr->ttl	     = GETADDRINFO_TTL;
@@ -845,18 +849,18 @@ static int async_getaddrinfo(void *arg)
 			sa_in6(&sa, rr->rdata.aaaa.addr);
 		}
 
-		le = list_apply(q->rrlv[0], false, getaddr_dup, rr);
+		le = list_apply(dq->rrlv, false, getaddr_dup, rr);
 		if (le) {
 			mem_deref(rr);
 			continue;
 		}
 
-		list_append(q->rrlv[0], &rr->le_priv, rr);
+		list_append(dq->rrlv, &rr->le_priv, rr);
 	}
 
 out:
 	if (err)
-		list_flush(q->rrlv[0]);
+		list_flush(dq->rrlv);
 
 	freeaddrinfo(res0);
 
@@ -866,13 +870,31 @@ out:
 
 static void getaddrinfo_h(int err, void *arg)
 {
-	struct dns_query *q = arg;
+	struct dnsquery *dq = arg;
+	struct dns_query *q;
+
+	q = list_ledata(hash_lookup(dq->dnsc->ht_query,
+				    hash_joaat_str_ci(dq->name),
+				    query_cmp_handler, dq));
+	if (!q) {
+		DEBUG_WARNING("getaddrinfo_h: no query found\n");
+		list_flush(dq->rrlv);
+		mem_deref(dq->rrlv);
+		goto out;
+	}
+
+	mem_deref(q->rrlv[0]);
+	q->rrlv[0] = dq->rrlv;
+
 	const bool cache = q->dnsc->conf.cache_ttl_max > 0;
 
 	DEBUG_INFO("--- ANSWER SECTION (getaddrinfo) id: %d %s ---\n", q->id,
 		   cache ? "(caching)" : "");
 
-	if (!err) {
+	if (err) {
+		DEBUG_INFO("getaddrinfo_h: err %m\n", err);
+	}
+	else {
 		struct le *le;
 		LIST_FOREACH(q->rrlv[0], le)
 		{
@@ -884,12 +906,24 @@ static void getaddrinfo_h(int err, void *arg)
 
 	if (err || !cache) {
 		mem_deref(q);
-		return;
+		goto out;
 	}
 
 	hash_append(q->dnsc->ht_query_cache, hash_joaat_str_ci(q->name),
 		    &q->le, q);
 	tmr_start(&q->tmr_ttl, GETADDRINFO_TTL * 1000, ttl_timeout_handler, q);
+
+out:
+	mem_deref(dq);
+}
+
+
+static void dq_deref(void *arg)
+{
+	struct dnsquery *dq = arg;
+
+	mem_deref(dq->dnsc);
+	mem_deref(dq->name);
 }
 
 
@@ -897,9 +931,35 @@ static int query_getaddrinfo(struct dns_query *q)
 {
 	int err;
 
-	err = re_thread_async(async_getaddrinfo, getaddrinfo_h, q);
+	struct dnsquery *dq = mem_zalloc(sizeof(struct dnsquery), dq_deref);
+	if (!dq)
+		return ENOMEM;
+
+	err = str_dup(&dq->name, q->name);
+	if (err)
+		goto out;
+
+	dq->type       = q->type;
+	dq->hdr.id     = q->id;
+	dq->hdr.opcode = q->opcode;
+	dq->dnsclass   = q->dnsclass;
+	dq->dnsc       = mem_ref(q->dnsc);
+
+	dq->rrlv = mem_alloc(sizeof(struct list), NULL);
+	if (!dq->rrlv) {
+		err = ENOMEM;
+		goto out;
+	}
+
+	list_init(dq->rrlv);
+
+	err = re_thread_async(async_getaddrinfo, getaddrinfo_h, dq);
 	if (err)
 		DEBUG_WARNING("re_thread_async: %m\n", err);
+
+out:
+	if (err)
+		mem_deref(dq);
 
 	return err;
 }

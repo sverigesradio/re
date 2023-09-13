@@ -147,21 +147,6 @@ typedef SSIZE_T ssize_t;
 #define ENODATA 200
 #endif
 
-/** Protocol error */
-#ifndef EPROTO
-#define EPROTO 201
-#endif
-
-/** Not a data message */
-#ifndef EBADMSG
-#define EBADMSG 202
-#endif
-
-/** Value too large for defined data type */
-#ifndef EOVERFLOW
-#define EOVERFLOW 203
-#endif
-
 /** Accessing a corrupted shared library */
 #ifndef ELIBBAD
 #define ELIBBAD 204
@@ -242,6 +227,10 @@ typedef SSIZE_T ssize_t;
 #define EKEYREJECTED 129
 #endif
 
+/* Cannot send after transport endpoint shutdown */
+#ifndef ESHUTDOWN
+#define ESHUTDOWN 108
+#endif
 
 /*
  * Give the compiler a hint which branch is "likely" or "unlikely" (inspired
@@ -313,23 +302,24 @@ typedef int re_sock_t;
 
 #define RE_ARG_SIZE(type)                                                     \
 	_Generic((type),                                                      \
-	bool:			sizeof(bool),                                 \
-	char:			sizeof(char),                                 \
-	unsigned char:		sizeof(unsigned char),                        \
-	short:			sizeof(short),                                \
-	unsigned short:		sizeof(unsigned short),	                      \
+	bool:			sizeof(int),                                  \
+	char:			sizeof(int),                                  \
+	unsigned char:		sizeof(unsigned int),                         \
+	short:			sizeof(int),                                  \
+	unsigned short:		sizeof(unsigned int),	                      \
 	int:			sizeof(int),                                  \
 	unsigned int:		sizeof(unsigned int),                         \
 	long:			sizeof(long),                                 \
 	unsigned long:		sizeof(unsigned long),                        \
 	long long:		sizeof(long long),                            \
 	unsigned long long:	sizeof(unsigned long long),                   \
-	float:			sizeof(float),                                \
+	float:			sizeof(double),                               \
 	double:			sizeof(double),                               \
 	char const*:		sizeof(char const *),                         \
 	char*:			sizeof(char *),                               \
 	void const*:		sizeof(void const *),                         \
 	void*:			sizeof(void *),                               \
+	struct pl:		sizeof(struct pl),                            \
 	default: sizeof(void*)                                                \
 )
 
@@ -367,12 +357,10 @@ typedef int re_sock_t;
 	if (likely((safe))) {                                                 \
 		size_t sz = va_arg((ap), size_t);                             \
 		if (unlikely(!sz)) {                                          \
-			re_assert(0 && "RE_VA_ARG: no more arguments");       \
-			err = EOVERFLOW;                                      \
+			err = ENODATA;                                        \
 			goto out;                                             \
 		}                                                             \
-		if (unlikely(sz > sizeof(type))) {                            \
-			re_assert(0 && "RE_VA_ARG: arg is not compatible");   \
+		if (unlikely(sz != sizeof(type))) {                           \
 			err = EOVERFLOW;                                      \
 			goto out;                                             \
 		}                                                             \

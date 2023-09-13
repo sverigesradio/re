@@ -43,6 +43,7 @@ struct sip_request {
 	bool canceled;
 	bool provrecv;
 	uint16_t port;
+	uint16_t srcport;
 };
 
 
@@ -211,7 +212,6 @@ static int request(struct sip_request *req, enum sip_transp tp,
 {
 	struct mbuf *mb   = NULL;
 	int err = ENOMEM;
-	struct sa laddr;
 
 	req->provrecv = false;
 
@@ -225,9 +225,12 @@ static int request(struct sip_request *req, enum sip_transp tp,
 	if (!req->branch || !mb)
 		goto out;
 
-	err = sip_transp_laddr(req->sip, &laddr, tp, dst);
-	if (err)
-		goto out;
+	if (req->srcport) {
+		struct sip_conncfg cfg = {.srcport = req->srcport};
+		err = sip_conncfg_set(req->sip, dst, &cfg);
+		if (err)
+			goto out;
+	}
 
 	if (!req->stateful) {
 		err = sip_send_conn(req->sip, NULL, tp, dst, mb,
@@ -945,6 +948,7 @@ int sip_drequestf(struct sip_request **reqp, struct sip *sip, bool stateful,
 		goto out;
 
 	req->reqp = reqp;
+	req->srcport = sip_dialog_srcport(dlg);
 	err = sip_request_send(req, sip, sip_dialog_route(dlg));
 
 out:
