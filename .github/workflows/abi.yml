@@ -1,18 +1,24 @@
 name: ABI Checks
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
   abicheck:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
-          ref: 'v3.5.0'
+          ref: 'v3.11.0'
           path: old
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
           path: current
 

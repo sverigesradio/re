@@ -16,7 +16,7 @@
 typedef void (prack_func)(void *arg);
 
 
-enum sdp_neg_state {
+enum neg_state {
 	INITIAL = 0,
 	OFFER_RECEIVED,
 	ANSWER_RECEIVED,
@@ -40,12 +40,25 @@ enum connect_action {
 };
 
 
+enum answer_action {
+	ANSW_NONE   = 0,
+	ANSW_CANCEL = 1,
+};
+
+
+enum offer_action {
+	OFFER_NONE   = 0,
+	OFFER_ANSW   = 1,
+};
+
+
 struct test {
 	struct sip *sip;
 	struct sipsess_sock *sock;
 	struct sipsess *a;
 	struct sipsess *b;
 	struct tmr ans_tmr;
+	struct tmr ack_tmr;
 	bool estab_a;
 	bool estab_b;
 	bool answr_a;
@@ -54,15 +67,20 @@ struct test {
 	bool progr_b;
 	bool offer_a;
 	bool offer_b;
+	bool ack_a;
+	bool ack_b;
 	enum rel100_mode rel100_a;
 	enum rel100_mode rel100_b;
-	enum sdp_neg_state sdp_state;
+	enum neg_state sdp_state;
 	enum rel100_state rel100_state_a;
 	enum rel100_state rel100_state_b;
 	enum connect_action conn_action;
+	enum offer_action offer_action;
+	enum answer_action answ_action;
 	prack_func *prack_action;
 	int progr_ret_code;
 	int answ_ret_code;
+	int ack_cnt;
 	bool upd_a;
 	bool upd_b;
 	struct mbuf *desc;
@@ -119,6 +137,34 @@ static void exit_handler(void *arg)
 }
 
 
+static void check_ack(void *arg)
+{
+	struct test *test = arg;
+	bool ack_a = sipsess_ack_pending(test->a);
+	bool ack_b = sipsess_ack_pending(test->b);
+
+	test->ack_a |= ack_a;
+	test->ack_b |= ack_b;
+
+	if (ack_a || ack_b)
+		tmr_start(&test->ack_tmr, 1, check_ack, test);
+	else
+		stop_test();
+}
+
+
+static void wait_for_ack(struct test *test)
+{
+	test->ack_a = sipsess_ack_pending(test->a);
+	test->ack_b = sipsess_ack_pending(test->b);
+
+	if (!test->ack_a && !test->ack_b)
+		return;
+
+	tmr_start(&test->ack_tmr, 1, check_ack, test);
+}
+
+
 static void send_answer_b(void *arg)
 {
 	struct test *test = arg;
@@ -131,21 +177,37 @@ static void send_answer_b(void *arg)
 }
 
 
-static void send_update_a(void *arg)
+static int make_sdp(struct mbuf **mbp, const char *sdp)
 {
-	struct test *test = arg;
 	struct mbuf *desc;
 	int err;
 
-	desc = mbuf_alloc(sizeof(sdp_a));
-	if (!desc) {
-		err = ENOMEM;
-		goto out;
-	}
-	err = mbuf_write_str(desc, sdp_a);
+	desc = mbuf_alloc(strlen(sdp) + 1);
+	if (!desc)
+		return ENOMEM;
+
+	err = mbuf_write_str(desc, sdp);
 	TEST_ERR(err);
 
 	mbuf_set_pos(desc, 0);
+out:
+	if (err)
+		mem_deref(desc);
+	else
+		*mbp = desc;
+
+	return err;
+}
+
+
+static void send_update_a(void *arg)
+{
+	struct test *test = arg;
+	struct mbuf *desc = NULL;
+	int err;
+
+	err = make_sdp(&desc, sdp_a);
+	TEST_ERR(err);
 
 	err = sipsess_modify(test->a, desc);
 	TEST_ERR(err);
@@ -161,18 +223,11 @@ out:
 static void send_update_b(void *arg)
 {
 	struct test *test = arg;
-	struct mbuf *desc;
+	struct mbuf *desc = NULL;
 	int err;
 
-	desc = mbuf_alloc(sizeof(sdp_b));
-	if (!desc) {
-		err = ENOMEM;
-		goto out;
-	}
-	err = mbuf_write_str(desc, sdp_b);
+	err = make_sdp(&desc, sdp_b);
 	TEST_ERR(err);
-
-	mbuf_set_pos(desc, 0);
 
 	err = sipsess_modify(test->b, desc);
 	TEST_ERR(err);
@@ -210,17 +265,9 @@ static int desc_handler_a(struct mbuf **descp, const struct sa *src,
 	(void)dst;
 	(void)arg;
 
-	desc = mbuf_alloc(sizeof(sdp_a));
-	if (!desc) {
-		err = ENOMEM;
-		goto out;
-	}
+	err = make_sdp(&desc, sdp_a);
+	TEST_ERR(err);
 
-	err = mbuf_write_str(desc, sdp_a);
-	if (err)
-		goto out;
-
-	mbuf_set_pos(desc, 0);
 	*descp = desc;
 
 out:
@@ -251,8 +298,8 @@ static int offer_handler_b(struct mbuf **descp, const struct sip_msg *msg,
 			   void *arg)
 {
 	struct test *test = arg;
-	(void)descp;
 	(void)msg;
+	int err = 0;
 
 	if (test->sdp_state == INITIAL || test->sdp_state == EARLY_CONFIRMED)
 		test->sdp_state = OFFER_RECEIVED;
@@ -262,7 +309,13 @@ static int offer_handler_b(struct mbuf **descp, const struct sip_msg *msg,
 
 	test->offer_b = true;
 
-	return 0;
+	if (test->offer_action == OFFER_ANSW) {
+		err = make_sdp(descp, sdp_b);
+		TEST_ERR(err);
+	}
+
+out:
+	return err;
 }
 
 
@@ -287,6 +340,9 @@ static int answer_handler_a(const struct sip_msg *msg, void *arg)
 
 		tmr_start(&test->ans_tmr, 0, send_answer_b, test);
 	}
+
+	if (test->answ_action == ANSW_CANCEL)
+		wait_for_ack(test);
 
 	return 0;
 }
@@ -377,7 +433,7 @@ static void close_handler(int err, const struct sip_msg *msg, void *arg)
 static void conn_handler(const struct sip_msg *msg, void *arg)
 {
 	struct test *test = arg;
-	struct mbuf *desc;
+	struct mbuf *desc = NULL;
 	int err;
 	char *hdrs = test->rel100_b == REL100_REQUIRED ?
 		     "Require: 100rel\r\n" : "";
@@ -393,19 +449,9 @@ static void conn_handler(const struct sip_msg *msg, void *arg)
 	if (sip_msg_hdr_has_value(msg, SIP_HDR_REQUIRE, "100rel"))
 		test->rel100_state_b |= REL100_REQUIRE;
 
-	desc = mbuf_alloc(sizeof(sdp_b));
-	if (!desc) {
-		abort_test(test, ENOMEM);
-		return;
-	}
+	err = make_sdp(&desc, sdp_b);
+	TEST_ERR(err);
 
-	err = mbuf_write_str(desc, sdp_b);
-	if (err) {
-		abort_test(test, err);
-		return;
-	}
-
-	mbuf_set_pos(desc, 0);
 	test->desc = desc;
 
 	if (test->conn_action & CONN_PROGRESS
@@ -454,7 +500,7 @@ static void conn_handler(const struct sip_msg *msg, void *arg)
 	else if (test->conn_action & CONN_ANSWER) {
 		err = sipsess_accept(&test->b, test->sock, msg, 200, "OK",
 				test->rel100_b, "b", "application/sdp",
-				NULL, NULL, NULL, false, offer_handler_b,
+				desc, NULL, NULL, false, offer_handler_b,
 				answer_handler_b, estab_handler_b, NULL, NULL,
 				close_handler, test, hdrs);
 		if (err != test->answ_ret_code) {
@@ -556,17 +602,15 @@ int test_sipsess(void)
 	err = sipsess_connect(&test.a, test.sock, to_uri, NULL,
 			      "sip:a@127.0.0.1", "a", NULL, 0,
 			      "application/sdp", NULL, NULL, false,
-			      callid, desc_handler,
+			      callid, desc_handler_a,
 			      offer_handler_a, answer_handler_a, NULL,
 			      estab_handler_a, NULL, NULL,
 			      close_handler, &test, NULL);
 	mem_deref(callid);
-	if (err)
-		goto out;
+	TEST_ERR(err);
 
 	err = re_main_timeout(200);
-	if (err)
-		goto out;
+	TEST_ERR(err);
 
 	if (test.err) {
 		err = test.err;
@@ -578,7 +622,32 @@ int test_sipsess(void)
 	ASSERT_TRUE(test.estab_b);
 	ASSERT_TRUE(test.desc);
 	ASSERT_TRUE(test.answr_a);
-	ASSERT_TRUE(!test.offer_b);
+	ASSERT_TRUE(test.offer_b);
+	ASSERT_TRUE(!test.offer_a);
+	ASSERT_TRUE(!test.answr_b);
+
+	/* test re-invite with wait for ACK */
+	test.sdp_state = INITIAL;
+	test.answ_action = ANSW_CANCEL;
+	test.offer_action = OFFER_ANSW;
+	err = make_sdp(&test.desc, sdp_a);
+	TEST_ERR(err);
+	err = sipsess_modify(test.a, test.desc);
+	TEST_ERR(err);
+	test.desc = mem_deref(test.desc);
+
+	err = re_main_timeout(200);
+	TEST_ERR(err);
+
+	if (test.err) {
+		err = test.err;
+		goto out;
+	}
+
+	ASSERT_TRUE(test.ack_b);
+	ASSERT_TRUE(!sipsess_ack_pending(test.a));
+	ASSERT_TRUE(!sipsess_ack_pending(test.b));
+	ASSERT_TRUE(test.sdp_state == ANSWER_RECEIVED);
 
  out:
 	test.a = mem_deref(test.a);
@@ -715,7 +784,7 @@ int test_sipsess_blind_transfer(void)
 	err = sipsess_connect(&test.a, test.sock, to_uri, NULL,
 			      "sip:a@127.0.0.1", "a", NULL, 0,
 			      "application/sdp", NULL, NULL, false,
-			      callid, desc_handler,
+			      callid, desc_handler_a,
 			      offer_handler_a, answer_handler_a, NULL,
 			      estab_handler_a, NULL, NULL,
 			      close_handler, &test, NULL);
@@ -738,7 +807,9 @@ int test_sipsess_blind_transfer(void)
 	ASSERT_TRUE(test.estab_b);
 	ASSERT_TRUE(test.desc);
 	ASSERT_TRUE(test.answr_a);
-	ASSERT_TRUE(!test.offer_b);
+	ASSERT_TRUE(test.offer_b);
+	ASSERT_TRUE(!test.offer_a);
+	ASSERT_TRUE(!test.answr_b);
 
  out:
 	test.a = mem_deref(test.a);
@@ -1054,7 +1125,7 @@ int test_sipsess_100rel_420(void)
 
 	err = re_main_timeout(200);
 	TEST_ERR(err);
-	ASSERT_TRUE(test.err == EINVAL);
+	ASSERT_TRUE(test.err == EPROTO);
 
 	/* okay here -- verify */
 	ASSERT_TRUE(!test.b);
@@ -1127,7 +1198,7 @@ int test_sipsess_100rel_421(void)
 
 	err = re_main_timeout(200);
 	TEST_ERR(err);
-	ASSERT_TRUE(test.err == EINVAL);
+	ASSERT_TRUE(test.err == EPROTO);
 
 	/* okay here -- verify */
 	ASSERT_TRUE(!test.b);

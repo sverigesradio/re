@@ -2,7 +2,7 @@
  * @file main.c  Main polling routine
  *
  * Copyright (C) 2010 Creytiv.com
- * Copyright (C) 2020-2022 Sebastian Reimers
+ * Copyright (C) Sebastian Reimers
  */
 #include <stdlib.h>
 #ifdef HAVE_SYS_TIME_H
@@ -39,7 +39,6 @@
 #include <re_fmt.h>
 #include <re_net.h>
 #include <re_mem.h>
-#include <re_mbuf.h>
 #include <re_list.h>
 #include <re_thread.h>
 #include <re_tmr.h>
@@ -57,8 +56,8 @@
 /** Main loop values */
 enum {
 	RE_THREAD_WORKERS = 4,
-	MAX_BLOCKING = 500,    /**< Maximum time spent in handler in [ms] */
-#if defined (FD_SETSIZE)
+	MAX_BLOCKING	  = 500, /**< Maximum time spent in handler in [ms] */
+#if defined(FD_SETSIZE)
 	DEFAULT_MAXFDS = FD_SETSIZE
 #else
 	DEFAULT_MAXFDS = 128
@@ -66,23 +65,27 @@ enum {
 };
 
 /** File descriptor handler struct */
-struct fhs {
+struct re_fhs {
+	int index;
 	re_sock_t fd;        /**< File Descriptor                   */
 	int flags;           /**< Polling flags (Read, Write, etc.) */
 	fd_h* fh;            /**< Event handler                     */
 	void* arg;           /**< Handler argument                  */
+	struct re_fhs* next; /**< Next element in the delete list   */
 };
 
 /** Polling loop data */
 struct re {
-	struct fhs *fhs;             /** File descriptor handler set        */
 	int maxfds;                  /**< Maximum number of polling fds     */
 	int nfds;                    /**< Number of active file descriptors */
 	enum poll_method method;     /**< The current polling method        */
 	RE_ATOMIC bool polling;      /**< Is polling flag                   */
 	int sig;                     /**< Last caught signal                */
 	struct tmrl *tmrl;           /**< List of timers                    */
-
+	struct re_fhs *fhsld;        /**< fhs single-linked delete list     */
+#ifdef HAVE_SELECT
+	struct re_fhs **fhsl;        /**< Select fhs pointer list           */
+#endif
 #ifdef HAVE_EPOLL
 	struct epoll_event *events;  /**< Event set for epoll()             */
 	int epfd;                    /**< epoll control file descriptor     */
@@ -106,11 +109,25 @@ static once_flag flag = ONCE_FLAG_INIT;
 static void poll_close(struct re *re);
 
 
+static void fhsld_flush(struct re *re)
+{
+	struct re_fhs *fhs = re->fhsld;
+	re->fhsld = NULL;
+
+	while (fhs) {
+		struct re_fhs *next = fhs->next;
+		mem_deref(fhs);
+		fhs = next;
+	}
+}
+
+
 static void re_destructor(void *arg)
 {
 	struct re *re = arg;
 
 	poll_close(re);
+	fhsld_flush(re);
 	mem_deref(re->mutex);
 	mem_deref(re->async);
 	mem_deref(re->tmrl);
@@ -142,6 +159,7 @@ int re_alloc(struct re **rep)
 		return ENOMEM;
 
 	err = mutex_alloc_tp(&re->mutex, mtx_recursive);
+
 	if (err) {
 		DEBUG_WARNING("thread_init: mtx_init error\n");
 		goto out;
@@ -164,7 +182,6 @@ int re_alloc(struct re **rep)
 #ifdef HAVE_KQUEUE
 	re->kqfd = -1;
 #endif
-
 
 out:
 	if (err)
@@ -222,38 +239,6 @@ static inline void re_unlock(struct re *re)
 }
 
 
-#ifdef WIN32
-/**
- * This code emulates POSIX numbering. There is no locking,
- * so zero thread-safety.
- *
- * @param re     Poll state
- * @param fd     File descriptor
- *
- * @return fhs index if success, otherwise -1
- */
-static int lookup_fd_index(struct re* re, re_sock_t fd) {
-	int i;
-
-	for (i = 0; i < re->nfds; i++) {
-		if (!re->fhs[i].fh)
-			continue;
-
-		if (re->fhs[i].fd == fd)
-			return i;
-	}
-
-	/* if nothing is found a linear search for the first
-	 * zeroed handler */
-	for (i = 0; i < re->maxfds; i++) {
-		if (!re->fhs[i].fh)
-			return i;
-	}
-
-	return -1;
-}
-#endif
-
 #if MAIN_DEBUG
 /**
  * Call the application event handler
@@ -262,32 +247,76 @@ static int lookup_fd_index(struct re* re, re_sock_t fd) {
  * @param i	 File descriptor handler index
  * @param flags  Event flags
  */
-static void fd_handler(struct re *re, int i, int flags)
+static void fd_handler(struct re_fhs *fhs, int flags)
 {
 	const uint64_t tick = tmr_jiffies();
 	uint32_t diff;
 
-	DEBUG_INFO("event on fd=%d index=%d (flags=0x%02x)...\n",
-		   re->fhs[i].fd, i, flags);
+	DEBUG_INFO("event on fd=%d (flags=0x%02x)...\n", fhs->fd, flags);
 
-	re->fhs[i].fh(flags, re->fhs[i].arg);
+	fhs->fh(flags, fhs->arg);
 
 	diff = (uint32_t)(tmr_jiffies() - tick);
 
 	if (diff > MAX_BLOCKING) {
 		DEBUG_WARNING("long async blocking: %u>%u ms (h=%p arg=%p)\n",
 			      diff, MAX_BLOCKING,
-			      re->fhs[i].fh, re->fhs[i].arg);
+			      fhs->fh, fhs->arg);
 	}
 }
 #endif
 
 
+#ifdef HAVE_SELECT
+static int set_select_fds(struct re *re, struct re_fhs *fhs)
+{
+	int i = -1;
+
+	if (!re || !fhs)
+		return EINVAL;
+
+	if (fhs->index != -1) {
+		i = fhs->index;
+	}
+	else {
+		/* if nothing is found a linear search for the first
+		 * zeroed handler */
+		for (int j = 0; j < re->maxfds; j++) {
+			if (!re->fhsl[j]) {
+				i = j;
+				break;
+			}
+		}
+	}
+
+	if (i == -1)
+		return ERANGE;
+
+	if (fhs->flags) {
+		re->fhsl[i] = fhs;
+		fhs->index  = i;
+	}
+	else {
+		re->fhsl[i] = NULL;
+		fhs->index  = -1;
+	}
+
+	return 0;
+}
+#endif
+
+
 #ifdef HAVE_EPOLL
-static int set_epoll_fds(struct re *re, re_sock_t fd, int flags)
+static int set_epoll_fds(struct re *re, struct re_fhs *fhs)
 {
 	struct epoll_event event;
 	int err = 0;
+
+	if (!re || !fhs)
+		return EINVAL;
+
+	re_sock_t fd = fhs->fd;
+	int flags    = fhs->flags;
 
 	if (re->epfd < 0)
 		return EBADFD;
@@ -297,7 +326,7 @@ static int set_epoll_fds(struct re *re, re_sock_t fd, int flags)
 	DEBUG_INFO("set_epoll_fds: fd=%d flags=0x%02x\n", fd, flags);
 
 	if (flags) {
-		event.data.fd = fd;
+		event.data.ptr = fhs;
 
 		if (flags & FD_READ)
 			event.events |= EPOLLIN;
@@ -343,10 +372,16 @@ static int set_epoll_fds(struct re *re, re_sock_t fd, int flags)
 
 
 #ifdef HAVE_KQUEUE
-static int set_kqueue_fds(struct re *re, re_sock_t fd, int flags)
+static int set_kqueue_fds(struct re *re, struct re_fhs *fhs)
 {
 	struct kevent kev[2];
 	int r, n = 0;
+
+	if (!fhs)
+		return EINVAL;
+
+	re_sock_t fd = fhs->fd;
+	int flags    = fhs->flags;
 
 	memset(kev, 0, sizeof(kev));
 
@@ -358,11 +393,11 @@ static int set_kqueue_fds(struct re *re, re_sock_t fd, int flags)
 	memset(kev, 0, sizeof(kev));
 
 	if (flags & FD_WRITE) {
-		EV_SET(&kev[n], fd, EVFILT_WRITE, EV_ADD, 0, 0, 0);
+		EV_SET(&kev[n], fd, EVFILT_WRITE, EV_ADD, 0, 0, fhs);
 		++n;
 	}
 	if (flags & FD_READ) {
-		EV_SET(&kev[n], fd, EVFILT_READ, EV_ADD, 0, 0, 0);
+		EV_SET(&kev[n], fd, EVFILT_READ, EV_ADD, 0, 0, fhs);
 		++n;
 	}
 
@@ -392,6 +427,17 @@ static int poll_init(struct re *re)
 	}
 
 	switch (re->method) {
+
+#ifdef HAVE_SELECT
+	case METHOD_SELECT:
+		if (re->fhsl)
+			return 0;
+
+		re->fhsl = mem_zalloc(re->maxfds * sizeof(void *), NULL);
+		if (!re->fhsl)
+			return ENOMEM;
+		break;
+#endif
 
 #ifdef HAVE_EPOLL
 	case METHOD_EPOLL:
@@ -438,6 +484,8 @@ static int poll_init(struct re *re)
 #endif
 
 	default:
+		DEBUG_WARNING("poll init: no method\n");
+		return EINVAL;
 		break;
 	}
 	return 0;
@@ -452,8 +500,13 @@ static void poll_close(struct re *re)
 
 	DEBUG_INFO("poll close\n");
 
-	re->fhs = mem_deref(re->fhs);
 	re->maxfds = 0;
+	re->nfds   = 0;
+	re->method = METHOD_NULL;
+
+#ifdef HAVE_SELECT
+	re->fhsl = mem_deref(re->fhsl);
+#endif
 
 #ifdef HAVE_EPOLL
 	DEBUG_INFO("poll_close: epfd=%d\n", re->epfd);
@@ -507,6 +560,8 @@ static int poll_setup(struct re *re)
 /**
  * Listen for events on a file descriptor
  *
+ * @param fhsp   File descriptor handler struct pointer (don't use mem_deref(),
+ *               use fd_close() instead)
  * @param fd     File descriptor
  * @param flags  Wanted event flags
  * @param fh     Event handler
@@ -514,18 +569,20 @@ static int poll_setup(struct re *re)
  *
  * @return 0 if success, otherwise errorcode
  */
-int fd_listen(re_sock_t fd, int flags, fd_h *fh, void *arg)
+int fd_listen(struct re_fhs **fhsp, re_sock_t fd, int flags, fd_h *fh,
+	      void *arg)
 {
 	struct re *re = re_get();
+	struct re_fhs *fhs;
 	int err = 0;
-	int i;
 
 	if (!re) {
 		DEBUG_WARNING("fd_listen: re not ready\n");
 		return EINVAL;
 	}
 
-	DEBUG_INFO("fd_listen: fd=%d flags=0x%02x\n", fd, flags);
+	if (!fhsp || !flags || !fh)
+		return EINVAL;
 
 #ifndef RELEASE
 	err = re_thread_check(true);
@@ -538,68 +595,74 @@ int fd_listen(re_sock_t fd, int flags, fd_h *fh, void *arg)
 		return EBADF;
 	}
 
-	if (flags || fh) {
-		err = poll_setup(re);
-		if (err)
-			return err;
-	}
+	err = poll_setup(re);
+	if (err)
+		return err;
 
-#ifdef WIN32
-	/* Windows file descriptors do not follow POSIX standard ranges. */
-	i = lookup_fd_index(re, fd);
-	if (i < 0) {
-		DEBUG_WARNING("fd_listen: fd=%d - no free fd_index\n", fd);
-		return EMFILE;
-	}
-#else
-	i = fd;
-#endif
+	fhs = *fhsp;
+	if (!fhs) {
+		fhs = mem_zalloc(sizeof(struct re_fhs), NULL);
+		if (!fhs)
+			return ENOMEM;
 
-	if (i >= re->maxfds) {
-		if (flags) {
-			DEBUG_WARNING("fd_listen: fd=%d flags=0x%02x"
-				      " - Max %d fds\n",
-				      fd, flags, re->maxfds);
+		fhs->fd	   = fd;
+		fhs->index = -1;
+
+		DEBUG_INFO("fd_listen/new: fd=%d flags=0x%02x\n", fd, flags);
+
+		if (++re->nfds > re->maxfds) {
+			DEBUG_WARNING("fd_listen maxfds reached %d > %d\n",
+				      re->nfds, re->maxfds);
+			--re->nfds;
+			err = EMFILE;
+			goto out;
 		}
-		return EMFILE;
+	}
+	else {
+		if (unlikely(fhs->fd != fd)) {
+			DEBUG_WARNING("fd_listen: fhs reuse conflict %d\n",
+				      fd);
+			return EBADF;
+		}
+		DEBUG_INFO("fd_listen/update: fd=%d flags=0x%02x\n", fd,
+			   flags);
 	}
 
-	/* Update fh set */
-	if (re->fhs) {
-		re->fhs[i].fd    = fd;
-		re->fhs[i].flags = flags;
-		re->fhs[i].fh    = fh;
-		re->fhs[i].arg   = arg;
-	}
-
-	re->nfds = max(re->nfds, i+1);
+	fhs->flags = flags;
+	fhs->fh	   = fh;
+	fhs->arg   = arg;
 
 	switch (re->method) {
-
+#ifdef HAVE_SELECT
+	case METHOD_SELECT:
+		err = set_select_fds(re, fhs);
+		break;
+#endif
 #ifdef HAVE_EPOLL
 	case METHOD_EPOLL:
-		if (re->epfd < 0)
-			return EBADFD;
-		err = set_epoll_fds(re, fd, flags);
+		err = set_epoll_fds(re, fhs);
 		break;
 #endif
 
 #ifdef HAVE_KQUEUE
 	case METHOD_KQUEUE:
-		err = set_kqueue_fds(re, fd, flags);
+		err = set_kqueue_fds(re, fhs);
 		break;
 #endif
 
 	default:
+		err = ENOTSUP;
 		break;
 	}
 
+out:
 	if (err) {
-		if (flags && fh) {
-			fd_close(fd);
-			DEBUG_WARNING("fd_listen: fd=%d flags=0x%02x (%m)\n",
-				      fd, flags, err);
-		}
+		mem_deref(fhs);
+		DEBUG_WARNING("fd_listen err: fd=%d flags=0x%02x (%m)\n", fd,
+			      flags, err);
+	}
+	else {
+		*fhsp = fhs;
 	}
 
 	return err;
@@ -607,13 +670,61 @@ int fd_listen(re_sock_t fd, int flags, fd_h *fh, void *arg)
 
 
 /**
- * Stop listening for events on a file descriptor
+ * Stop and destruct listening for events on a file descriptor
  *
- * @param fd     File descriptor
+ * @param fhs  File descriptor handler struct pointer
+ *
+ * @return always NULL
  */
-void fd_close(re_sock_t fd)
+struct re_fhs *fd_close(struct re_fhs *fhs)
 {
-	(void)fd_listen(fd, 0, NULL, NULL);
+	struct re *re = re_get();
+	int err	      = 0;
+
+	if (!fhs || !re)
+		return NULL;
+
+	fhs->flags = 0;
+	fhs->fh	   = NULL;
+	fhs->arg   = NULL;
+
+	switch (re->method) {
+#ifdef HAVE_SELECT
+	case METHOD_SELECT:
+		err = set_select_fds(re, fhs);
+		break;
+#endif
+#ifdef HAVE_EPOLL
+	case METHOD_EPOLL:
+		err = set_epoll_fds(re, fhs);
+		break;
+#endif
+
+#ifdef HAVE_KQUEUE
+	case METHOD_KQUEUE:
+		err = set_kqueue_fds(re, fhs);
+		break;
+#endif
+
+	default:
+		err = ENOTSUP;
+		break;
+	}
+
+	if (err) {
+		DEBUG_WARNING("fd_close err: fd=%d (%m)\n", fhs->fd, err);
+	}
+	else {
+		DEBUG_INFO("fd_close: fd=%d\n", fhs->fd);
+	}
+
+	re_assert(fhs->next == NULL);
+	fhs->next = re->fhsld;
+	re->fhsld = fhs;
+
+	--re->nfds;
+
+	return NULL;
 }
 
 
@@ -627,7 +738,10 @@ void fd_close(re_sock_t fd)
 static int fd_poll(struct re *re)
 {
 	const uint64_t to = tmr_next_timeout(re->tmrl);
-	int i, n, index;
+	int i, n;
+	int nfds = re->nfds;
+	int err = 0;
+	struct re_fhs *fhs = NULL;
 #ifdef HAVE_SELECT
 	fd_set rfds, wfds, efds;
 #endif
@@ -640,24 +754,37 @@ static int fd_poll(struct re *re)
 #ifdef HAVE_SELECT
 	case METHOD_SELECT: {
 		struct timeval tv;
+		int max_fd_plus_1 = 0;
+		int cfds = 0;
 
 		/* Clear and update fd sets */
 		FD_ZERO(&rfds);
 		FD_ZERO(&wfds);
 		FD_ZERO(&efds);
 
-		for (i=0; i<re->nfds; i++) {
-			re_sock_t fd = re->fhs[i].fd;
-			if (!re->fhs[i].fh)
+		for (i = 0; cfds < nfds; i++) {
+			fhs = re->fhsl[i];
+
+			if (!fhs || !fhs->fh)
 				continue;
 
-			if (re->fhs[i].flags & FD_READ)
+			++cfds;
+
+			re_sock_t fd = fhs->fd;
+			if (fhs->flags & FD_READ)
 				FD_SET(fd, &rfds);
-			if (re->fhs[i].flags & FD_WRITE)
+			if (fhs->flags & FD_WRITE)
 				FD_SET(fd, &wfds);
-			if (re->fhs[i].flags & FD_EXCEPT)
+			if (fhs->flags & FD_EXCEPT)
 				FD_SET(fd, &efds);
+
+/* not needed on WIN32 since select nfds arg is ignored */
+#if !defined(WIN32)
+			max_fd_plus_1 = max(max_fd_plus_1, fd + 1);
+#endif
 		}
+
+		nfds = re->maxfds;
 
 #ifdef WIN32
 		tv.tv_sec  = (long) to / 1000;
@@ -665,8 +792,10 @@ static int fd_poll(struct re *re)
 		tv.tv_sec  = (time_t) to / 1000;
 #endif
 		tv.tv_usec = (uint32_t) (to % 1000) * 1000;
+
 		re_unlock(re);
-		n = select(re->nfds, &rfds, &wfds, &efds, to ? &tv : NULL);
+		n = select(max_fd_plus_1, &rfds, &wfds, &efds,
+			   to ? &tv : NULL);
 		re_lock(re);
 	}
 		break;
@@ -698,14 +827,17 @@ static int fd_poll(struct re *re)
 	default:
 		(void)to;
 		DEBUG_WARNING("no polling method set\n");
-		return EINVAL;
+		err = EINVAL;
+		goto out;
 	}
 
-	if (n < 0)
-		return RE_ERRNO_SOCK;
+	if (n < 0) {
+		err = RE_ERRNO_SOCK;
+		goto out;
+	}
 
 	/* Check for events */
-	for (i=0; (n > 0) && (i < re->nfds); i++) {
+	for (i=0; (n > 0) && (i < nfds); i++) {
 		re_sock_t fd;
 		int flags = 0;
 
@@ -713,7 +845,11 @@ static int fd_poll(struct re *re)
 
 #ifdef HAVE_SELECT
 		case METHOD_SELECT:
-			fd = re->fhs[i].fd;
+			fhs = re->fhsl[i];
+			if (!fhs)
+				break;
+
+			fd = fhs->fd;
 			if (FD_ISSET(fd, &rfds))
 				flags |= FD_READ;
 			if (FD_ISSET(fd, &wfds))
@@ -724,7 +860,8 @@ static int fd_poll(struct re *re)
 #endif
 #ifdef HAVE_EPOLL
 		case METHOD_EPOLL:
-			fd = re->events[i].data.fd;
+			fhs = re->events[i].data.ptr;
+			fd = fhs->fd;
 
 			if (re->events[i].events & EPOLLIN)
 				flags |= FD_READ;
@@ -746,11 +883,7 @@ static int fd_poll(struct re *re)
 			struct kevent *kev = &re->evlist[i];
 
 			fd = (int)kev->ident;
-
-			if (fd >= re->maxfds) {
-				DEBUG_WARNING("large fd=%d\n", fd);
-				break;
-			}
+			fhs = kev->udata;
 
 			if (kev->filter == EVFILT_READ)
 				flags |= FD_READ;
@@ -778,22 +911,18 @@ static int fd_poll(struct re *re)
 #endif
 
 		default:
-			return EINVAL;
+			err = EINVAL;
+			goto out;
 		}
 
 		if (!flags)
 			continue;
-#ifdef WIN32
-		index = i;
-#else
-		index = fd;
-#endif
 
-		if (re->fhs[index].fh) {
+		if (fhs && fhs->fh) {
 #if MAIN_DEBUG
-			fd_handler(re, index, flags);
+			fd_handler(fhs, flags);
 #else
-			re->fhs[index].fh(flags, re->fhs[index].arg);
+			fhs->fh(flags, fhs->arg);
 #endif
 		}
 
@@ -801,7 +930,11 @@ static int fd_poll(struct re *re)
 		--n;
 	}
 
-	return 0;
+ out:
+	/* Delayed fhs deref to avoid dangling fhs pointers */
+	fhsld_flush(re);
+
+	return err;
 }
 
 
@@ -826,7 +959,6 @@ int fd_setsize(int maxfds)
 	}
 
 	if (!maxfds) {
-		fd_debug();
 		poll_close(re);
 		return 0;
 	}
@@ -852,45 +984,7 @@ int fd_setsize(int maxfds)
 	if (!re->maxfds)
 		re->maxfds = maxfds;
 
-	if (!re->fhs) {
-		DEBUG_INFO("fd_setsize: maxfds=%d, allocating %u bytes\n",
-			   re->maxfds, re->maxfds * sizeof(*re->fhs));
-
-		re->fhs = mem_zalloc(re->maxfds * sizeof(*re->fhs), NULL);
-		if (!re->fhs)
-			return ENOMEM;
-	}
-
 	return 0;
-}
-
-
-/**
- * Print all file descriptors in-use
- */
-void fd_debug(void)
-{
-	const struct re *re = re_get();
-	int i;
-
-	if (!re) {
-		DEBUG_WARNING("fd_debug: re not ready\n");
-		return;
-	}
-
-	if (!re->fhs)
-		return;
-
-	for (i=0; i<re->nfds; i++) {
-
-		if (!re->fhs[i].flags)
-			continue;
-
-		(void)re_fprintf(stderr,
-				 "fd %d in use: flags=%x fh=%p arg=%p\n",
-				 i, re->fhs[i].flags, re->fhs[i].fh,
-				 re->fhs[i].arg);
-	}
 }
 
 

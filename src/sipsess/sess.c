@@ -85,8 +85,13 @@ static bool termwait(struct sipsess *sess)
 
 	if (sess->req) {
 		sip_request_cancel(sess->req);
-		mem_ref(sess);
-		wait = true;
+		if (!sip_request_provrecv(sess->req)) {
+			sess->req = mem_deref(sess->req);
+		}
+		else {
+			mem_ref(sess);
+			wait = true;
+		}
 	}
 
 	if (sess->replyl.head) {
@@ -333,7 +338,7 @@ void sipsess_abort(struct sipsess *sess)
  */
 bool sipsess_awaiting_prack(const struct sipsess *sess)
 {
-	return sess ? sess->awaiting_prack : false;
+	return sess ? sess->prack_waiting_cnt > 0 : false;
 }
 
 
@@ -349,6 +354,32 @@ bool sipsess_refresh_allowed(const struct sipsess *sess)
 	if (!sess)
 		return false;
 
-	return ((sess->established || sess->refresh_allowed)
-		&& !sess->terminated && !sess->awaiting_answer);
+	return !sess->terminated && sess->neg_state == SDP_NEG_DONE;
+}
+
+
+/**
+ * Return true if there is an open SIP Session Reply for which an ACK is
+ * expected
+ *
+ * @param sess      SIP Session
+ *
+ * @return True if ACK is pending, otherwise false
+ */
+bool sipsess_ack_pending(const struct sipsess *sess)
+{
+	return sess && sess->replyl.head ? true : false;
+}
+
+
+/**
+ * Get the SDP negotiation state of a SIP Session
+ *
+ * @param sess  SIP Session
+ *
+ * @return SDP negotiation state
+ */
+enum sdp_neg_state sipsess_sdp_neg_state(const struct sipsess *sess)
+{
+	return sess ? sess->neg_state : SDP_NEG_NONE;
 }

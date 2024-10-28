@@ -5,7 +5,7 @@ libre README
 libre is a Generic library for real-time communications with async IO support.
 
 - Copyright (C) 2010 - 2020 Creytiv.com
-- Copyright (C) 2020 - 2023 Baresip Foundation (https://github.com/baresip)
+- Copyright (C) 2020 - 2024 Baresip Foundation (https://github.com/baresip)
 
 ![Build](https://github.com/baresip/re/workflows/Build/badge.svg)
 ![ccheck](https://github.com/baresip/re/workflows/ccheck/badge.svg)
@@ -23,7 +23,6 @@ libre is a Generic library for real-time communications with async IO support.
 * BFCP
 * HTTP-stack with client/server
 * Websockets
-* Jitter-buffer
 * Async I/O (select, epoll, kqueue)
 * UDP/TCP/TLS/DTLS transport
 * JSON parser
@@ -84,7 +83,7 @@ $ sudo ldconfig
 ### Examples
 
 Coding examples are available from the
-[redemo](http://creytiv.com/pub/redemo-0.5.0.tar.gz) project
+[redemo](https://github.com/creytiv/redemo "creytiv/redemo: Demo example applications using libre") project.
 
 
 ## License
@@ -124,7 +123,6 @@ Patches can sent via Github
 | http     | stable   | HTTP parser (RFC 2616)                         |
 | httpauth | stable   | HTTP-based Authentication (RFC 2617)           |
 | ice      | stable   | Interactive Connectivity Establishment (ICE)   |
-| jbuf     | stable   | Jitter buffer                                  |
 | json     | stable   | JavaScript Object Notation (JSON)              |
 | list     | stable   | Sortable doubly-linked list handling           |
 | main     | stable   | Main poll loop                                 |
@@ -171,7 +169,6 @@ legend:
 
 * [RFC 1321](https://tools.ietf.org/html/rfc1321) - The MD5 Message-Digest Algorithm
 * [RFC 1886](https://tools.ietf.org/html/rfc1886) - DNS Extensions to support IP version 6
-* [RFC 2032](https://tools.ietf.org/html/rfc2032) - RTP Payload Format for H.261 Video Streams
 * [RFC 2616](https://tools.ietf.org/html/rfc2616) - Hypertext Transfer Protocol -- HTTP/1.1
 * [RFC 2617](https://tools.ietf.org/html/rfc2617) - HTTP Authentication: Basic and Digest Access Authentication
 * [RFC 2782](https://tools.ietf.org/html/rfc2782) - A DNS RR for Specifying the Location of Services (DNS SRV)
@@ -218,6 +215,7 @@ legend:
 * [RFC 6455](https://tools.ietf.org/html/rfc6455) - The WebSocket Protocol
 * [RFC 7159](https://tools.ietf.org/html/rfc7159) - JavaScript Object Notation (JSON)
 * [RFC 7350](https://tools.ietf.org/html/rfc7350) - DTLS as Transport for STUN
+* [RFC 7616](https://tools.ietf.org/html/rfc7616) - HTTP Digest Access Authentication
 * [RFC 7714](https://tools.ietf.org/html/rfc7714) - AES-GCM Authenticated Encryption in SRTP
 
 
@@ -225,13 +223,14 @@ legend:
 
 |  System | Support type | Supported versions | Notes |
 |---|---|---|---|
-| Linux | Tier 1 | glibc >= 2.27 (Ubuntu 18.04) | |
+| Linux | Tier 1 | glibc >= 2.27 | |
+| Linux | Tier 1 | musl >= 1.2 | |
 | macOS | Tier 1 | macOS >= 10.10 | |
 | Windows | Tier 1 | >= Windows 8 | MinGW-w64, >= VS 2019 |
 | Android | Tier 2 | | |
 | iOS | Tier 2 | | |
-| FreeBSD | Tier 2 | >= 11 | |
-| OpenBSD | Tier 2 | >= 6.7 | |
+| FreeBSD | Tier 2 | >= 12 | |
+| OpenBSD | Tier 2 | >= 7.4 | |
 | Linux | Tier 2 | uClibc | |
 
 
@@ -255,6 +254,7 @@ legend:
 * GNU C Library (glibc)
 * Windows C Run-Time Libraries (CRT)
 * uClibc
+* musl
 
 
 ### Supported compilers:
@@ -267,8 +267,7 @@ legend:
 ### Supported versions of OpenSSL
 
 * OpenSSL version 1.1.1
-* OpenSSL version 3.0.x
-* OpenSSL version 3.1.x
+* OpenSSL version 3.x.x
 * LibreSSL version 3.x
 
 

@@ -1,6 +1,12 @@
 name: valgrind leak check
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
   valgrind:
@@ -10,7 +16,7 @@ jobs:
       CMAKE_GENERATOR: Ninja
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: fix flaky azure mirrors
       if: ${{ runner.os == 'Linux' }}

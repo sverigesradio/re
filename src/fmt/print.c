@@ -441,20 +441,16 @@ static int vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg,
 				break;
 			}
 
-#ifdef HAVE_INET6
 			if (AF_INET6 == sa_af(sa)) {
 				ch = '[';
 				err |= vph(&ch, 1, arg);
 			}
-#endif
 			err |= write_padded(addr, strlen(addr), pad, ' ',
 					    plr, NULL, vph, arg);
-#ifdef HAVE_INET6
 			if (AF_INET6 == sa_af(sa)) {
 				ch = ']';
 				err |= vph(&ch, 1, arg);
 			}
-#endif
 
 			ch = ':';
 			err |= vph(&ch, 1, arg);
@@ -494,11 +490,12 @@ static int vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg,
 out:
 #ifndef RELEASE
 	if (err == ENODATA) {
-		DEBUG_WARNING("Format: \"%b<-- NO ARG\n", fmt, p - fmt + 1);
+		re_fprintf(stderr, "Format: \"%b<-- NO ARG\n",
+			   fmt, p - fmt + 1);
 		re_assert(0 && "RE_VA_ARG: no more arguments");
 	}
 	if (err == EOVERFLOW) {
-		DEBUG_WARNING("Format: \"%b<-- SIZE ERROR\n", fmt,
+		re_fprintf(stderr, "Format: \"%b<-- SIZE ERROR\n", fmt,
 			      p - fmt + 1);
 		re_assert(0 && "RE_VA_ARG: arg is not compatible");
 	}
@@ -521,7 +518,7 @@ out:
  *
  * <pre>
  *   %b  (char *, size_t)        Buffer string with pointer and length
- *   %r  (struct pl)             Pointer-length object
+ *   %r  (struct pl *)           Pointer-length object
  *   %w  (uint8_t *, size_t)     Binary buffer to hexadecimal format
  *   %j  (struct sa *)           Socket address - address part only
  *   %J  (struct sa *)           Socket address and port - like 1.2.3.4:1234
@@ -557,7 +554,7 @@ int re_vhprintf(const char *fmt, va_list ap, re_vprintf_h *vph, void *arg)
  *
  * <pre>
  *   %b  (char *, size_t)        Buffer string with pointer and length
- *   %r  (struct pl)             Pointer-length object
+ *   %r  (struct pl *)           Pointer-length object
  *   %w  (uint8_t *, size_t)     Binary buffer to hexadecimal format
  *   %j  (struct sa *)           Socket address - address part only
  *   %J  (struct sa *)           Socket address and port - like 1.2.3.4:1234

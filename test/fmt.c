@@ -138,6 +138,24 @@ int test_fmt_pl(void)
 }
 
 
+int test_fmt_pl_alloc_str(void)
+{
+	int err		= 0;
+	char test_str[] = "Test String";
+
+	struct pl *pl = pl_alloc_str(test_str);
+	if (!pl)
+		return ENOMEM;
+
+	TEST_MEMCMP(test_str, str_len(test_str), pl->p, pl->l);
+
+out:
+	mem_deref(pl);
+
+	return err;
+}
+
+
 int test_fmt_pl_i32(void)
 {
 	const struct {
@@ -604,10 +622,8 @@ int test_fmt_snprintf(void)
 	const uint8_t v[] = {0xfa, 0xce, 0xb0, 0x0c};
 	struct sa sa4;
 	const char addr4[] = "1.2.3.4";
-#ifdef HAVE_INET6
 	struct sa sa6;
 	const char addr6[] = "2001:5c0:8fff:ffff::d";
-#endif
 	char buf[128], sbuf[8];
 	int n, err;
 
@@ -628,26 +644,22 @@ int test_fmt_snprintf(void)
 		DEBUG_WARNING("sa_set_str4: %m\n", err);
 		goto out;
 	}
-#ifdef HAVE_INET6
 	err = sa_set_str(&sa6, addr6, 0);
 	if (err) {
 		DEBUG_WARNING("sa_set_str6: %m\n", err);
 		goto out;
 	}
-#endif
 
 	(void)re_snprintf(buf, sizeof(buf), "%j", &sa4);
 	if (0 != strcmp(buf, addr4)) {
 		err = EINVAL;
 		goto out;
 	}
-#ifdef HAVE_INET6
 	(void)re_snprintf(buf, sizeof(buf), "%j", &sa6);
 	if (0 != strcmp(buf, addr6)) {
 		err = EINVAL;
 		goto out;
 	}
-#endif
 
 	/* Overflow */
 	n = re_snprintf(buf, 3, "12");
@@ -1132,7 +1144,44 @@ int test_fmt_hexdump(void)
 		"8abcjt5m950gxvkuvippcvt60me9z5zh"
 		;
 
-	hexdump(stdout, buf, str_len(buf));
+#ifdef WIN32
+	FILE *f = fopen("nul", "w");
+#else
+	FILE *f = fopen("/dev/null", "w");
+#endif
+	if (!f)
+		return EINVAL;
+
+	hexdump(f, buf, str_len(buf));
+
+	fclose(f);
 
 	return 0;
+}
+
+
+int test_text2pcap(void)
+{
+	char test[64];
+	struct mbuf *mb;
+	int err = 0;
+
+	mb = mbuf_alloc(2);
+	if (!mb)
+		return ENOMEM;
+
+	mbuf_write_u8(mb, 42);
+	mbuf_write_u8(mb, 23);
+
+	mbuf_set_pos(mb, 0);
+
+	struct re_text2pcap pcap = {.id = "test", .in = true, .mb = mb};
+
+	int ret = re_snprintf(test, sizeof(test), "%H", re_text2pcap, &pcap);
+
+	TEST_EQUALS(35, ret);
+
+out:
+	mem_deref(mb);
+	return err;
 }

@@ -7,16 +7,24 @@
 #include <re.h>
 #include "test.h"
 
+#define DEBUG_MODULE "test_conf"
+#define DEBUG_LEVEL 5
+#include <re_dbg.h>
+
 
 int test_conf(void)
 {
 	static const char *cfg =
 		"string_val\trattarei\n"
-		"u32_val       42\n";
+		"u32_val       42\n"
+		"i32_val       -23\n"
+		"float_val     1.5\n";
 	char str[256];
 	struct conf *conf;
 	struct pl pl;
 	uint32_t u32;
+	int32_t i32;
+	double fl;
 	int err;
 
 	err = conf_alloc_buf(&conf, (uint8_t *)cfg, strlen(cfg));
@@ -24,14 +32,21 @@ int test_conf(void)
 		return err;
 
 	err = conf_get_str(conf, "string_val", str, sizeof(str));
-	if (err)
-		goto out;
+	TEST_ERR(err);
 	if (strcmp(str, "rattarei"))
 		goto badmsg;
 
 	err = conf_get_u32(conf, "u32_val", &u32);
-	if (u32 != 42)
-		goto badmsg;
+	TEST_ERR(err);
+	TEST_EQUALS(42, u32);
+
+	err = conf_get_i32(conf, "i32_val", &i32);
+	TEST_ERR(err);
+	TEST_EQUALS(-23, i32);
+
+	err = conf_get_float(conf, "float_val", &fl);
+	TEST_ERR(err);
+	TEST_EQUALS(1.5, fl);
 
 	/* Non-existing parameters */
 	if (0 == conf_get(conf, "rattarei", &pl))

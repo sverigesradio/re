@@ -243,6 +243,7 @@ int test_rtcp_encode(void)
 	struct mbuf *mb;
 	const size_t sz = sizeof(rtcp_msg) - 1;
 	const uint32_t srcv[2] = {0x12345678, 0x00abcdef};
+	char debug_buf[512];
 	int err = 0;
 
 	mb = mbuf_alloc(512);
@@ -285,7 +286,17 @@ int test_rtcp_encode(void)
 	while (mbuf_get_left(mb) >= 4 && !err) {
 		struct rtcp_msg *msg = NULL;
 		err = rtcp_decode(&msg, mb);
+		if (err)
+			break;
+
+		/* Check that debug print works */
+		debug_buf[0] = '\0';
+		re_snprintf(debug_buf, sizeof(debug_buf),
+			    "%H", rtcp_msg_print, msg);
+
 		msg = mem_deref(msg);
+
+		ASSERT_TRUE(str_isset(debug_buf));
 	}
 	if (err)
 		goto out;
@@ -320,21 +331,17 @@ static const uint8_t rtcp_sdes[] =
 	"";
 
 
-static int test_rtcp_decode_badmsg(void)
+int test_rtcp_decode_badmsg(void)
 {
 	struct rtcp_msg *msg = NULL;
 	uint32_t ssrc = 0xcafebabe;
-	struct mbuf *mb;
-	int err = 0;
 
-	mb = mbuf_alloc(128);
-	if (!mb) {
-		err = ENOMEM;
-		goto out;
-	}
+	struct mbuf *mb = mbuf_alloc(128);
+	if (!mb)
+		return ENOMEM;
 
-	err = rtcp_encode(mb, RTCP_PSFB, RTCP_PSFB_SLI,
-			  ssrc, ssrc, NULL, NULL);
+	int err = rtcp_encode(mb, RTCP_PSFB, RTCP_PSFB_SLI,
+			      ssrc, ssrc, NULL, NULL);
 	if (err)
 		goto out;
 
@@ -344,7 +351,8 @@ static int test_rtcp_decode_badmsg(void)
 
 	mb->pos = 0;
 
-	if (EBADMSG != rtcp_decode(&msg, mb)) {
+	int ret = rtcp_decode(&msg, mb);
+	if (EBADMSG != ret && ret != ENOMEM) {
 		err = EBADMSG;
 		goto out;
 	}
@@ -412,10 +420,6 @@ int test_rtcp_decode(void)
 
 	if (err)
 		goto out;
-
-	err = test_rtcp_decode_badmsg();
-	if (err)
-		return err;
 
  out:
 	mem_deref(msg);

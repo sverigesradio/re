@@ -28,6 +28,13 @@ enum tls_keytype {
 	TLS_KEYTYPE_EC,
 };
 
+enum tls_resume_mode {
+	TLS_RESUMPTION_NONE	= 0,
+	TLS_RESUMPTION_IDS	= (1 << 0),
+	TLS_RESUMPTION_TICKETS	= (1 << 1),
+	TLS_RESUMPTION_ALL	= TLS_RESUMPTION_IDS | TLS_RESUMPTION_TICKETS,
+};
+
 struct tls_conn_d {
 	int (*verifyh) (int ok, void *arg);
 	void *arg;
@@ -49,6 +56,9 @@ int tls_set_certificate_der(struct tls *tls, enum tls_keytype keytype,
 			    const uint8_t *cert, size_t len_cert,
 			    const uint8_t *key, size_t len_key);
 int tls_set_certificate(struct tls *tls, const char *cert, size_t len);
+int tls_set_certificate_chain_pem(struct tls *tls, const char *chain,
+				  size_t len_chain);
+int tls_set_certificate_chain(struct tls *tls, const char *path);
 void tls_set_verify_client(struct tls *tls);
 void tls_set_verify_client_trust_all(struct tls *tls);
 int tls_set_verify_client_handler(struct tls_conn *tc, int depth,
@@ -69,10 +79,13 @@ int tls_srtp_keyinfo(const struct tls_conn *tc, enum srtp_suite *suite,
 const char *tls_cipher_name(const struct tls_conn *tc);
 int tls_set_ciphers(struct tls *tls, const char *cipherv[], size_t count);
 int tls_set_verify_server(struct tls_conn *tc, const char *host);
+int tls_verify_client(struct tls_conn *tc);
 
 int tls_get_issuer(struct tls *tls, struct mbuf *mb);
 int tls_get_subject(struct tls *tls, struct mbuf *mb);
 void tls_disable_verify_server(struct tls *tls);
+void tls_enable_verify_client(struct tls *tls, bool enable);
+int tls_set_resumption(struct tls *tls, const enum tls_resume_mode mode);
 
 int tls_set_min_proto_version(struct tls *tls, int version);
 int tls_set_max_proto_version(struct tls *tls, int version);

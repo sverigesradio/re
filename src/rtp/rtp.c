@@ -14,8 +14,8 @@
 #include <re_net.h>
 #include <re_udp.h>
 #include <re_rtp.h>
+#include <re_atomic.h>
 #include "rtcp.h"
-
 
 #define DEBUG_MODULE "rtp"
 #define DEBUG_LEVEL 5
@@ -38,7 +38,7 @@ struct rtp_sock {
 	rtcp_recv_h *rtcph;     /**< RTCP Receive handler  */
 	void *arg;              /**< Handler argument      */
 	struct rtcp_sess *rtcp; /**< RTCP Session          */
-	bool rtcp_mux;          /**< RTP/RTCP multiplexing */
+	RE_ATOMIC bool rtcp_mux;  /**< RTP/RTCP multiplexing */
 };
 
 
@@ -166,6 +166,10 @@ static void rtcp_recv_handler(const struct sa *src, struct mbuf *mb, void *arg)
 	struct rtp_sock *rs = arg;
 	struct rtcp_msg *msg;
 
+#ifdef RE_RTP_PCAP
+	re_text2pcap_trace("rtcp_recv", "RTCP", true, mb);
+#endif
+
 	while (0 == rtcp_decode(&msg, mb)) {
 
 		/* handle internally first */
@@ -187,7 +191,7 @@ static void udp_recv_handler(const struct sa *src, struct mbuf *mb, void *arg)
 	int err;
 
 	/* Handle RTCP multiplexed on RTP-port */
-	if (rs->rtcp_mux) {
+	if (re_atomic_rlx(&rs->rtcp_mux)) {
 		uint8_t pt;
 
 		if (mbuf_get_left(mb) < 2)
@@ -201,14 +205,17 @@ static void udp_recv_handler(const struct sa *src, struct mbuf *mb, void *arg)
 		}
 	}
 
+#ifdef RE_RTP_PCAP
+	re_text2pcap_trace("rtp_udp_recv", "RTP", true, mb);
+#endif
+
 	err = rtp_decode(rs, mb, &hdr);
 	if (err)
 		return;
 
-	if (rs->rtcp) {
-		rtcp_sess_rx_rtp(rs->rtcp, hdr.seq, hdr.ts,
-				 hdr.ssrc, mbuf_get_left(mb), src);
-	}
+
+	if (rs->rtcp)
+		rtcp_sess_rx_rtp(rs->rtcp, &hdr, mbuf_get_left(mb), src);
 
 	if (rs->recvh)
 		rs->recvh(src, &hdr, mb, rs->arg);
@@ -526,6 +533,10 @@ int rtp_send(struct rtp_sock *rs, const struct sa *dst, bool ext,
 
 	mb->pos = pos;
 
+#ifdef RE_RTP_PCAP
+	re_text2pcap_trace("rtp_send", "RTP", false, mb);
+#endif
+
 	return udp_send(rs->sock_rtp, dst, mb);
 }
 
@@ -569,6 +580,10 @@ int rtp_resend(struct rtp_sock *rs, uint16_t seq, const struct sa *dst,
 		return err;
 
 	mb->pos = pos;
+
+#ifdef RE_RTP_PCAP
+	re_text2pcap_trace("rtp_resend", "RTP", false, mb);
+#endif
 
 	return udp_send(rs->sock_rtp, dst, mb);
 }
@@ -683,7 +698,7 @@ void rtcp_enable_mux(struct rtp_sock *rs, bool enabled)
 	if (!rs)
 		return;
 
-	rs->rtcp_mux = enabled;
+	re_atomic_rlx_set(&rs->rtcp_mux, enabled);
 }
 
 
@@ -701,10 +716,13 @@ int rtcp_send(struct rtp_sock *rs, struct mbuf *mb)
 	if (!rs)
 		return EINVAL;
 
-	sock = rs->rtcp_mux ? rs->sock_rtp : rs->sock_rtcp;
+	sock = re_atomic_rlx(&rs->rtcp_mux) ? rs->sock_rtp : rs->sock_rtcp;
 	if (!sock || !sa_isset(&rs->rtcp_peer, SA_ALL))
 		return EINVAL;
 
+#ifdef RE_RTP_PCAP
+	re_text2pcap_trace("rtcp_send", "RTCP", false, mb);
+#endif
 	return udp_send(sock, &rs->rtcp_peer, mb);
 }
 

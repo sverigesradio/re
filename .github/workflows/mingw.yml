@@ -1,6 +1,12 @@
 name: MinGW-w64 Test
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
   MinGW-w64-build:
@@ -20,19 +26,19 @@ jobs:
       run: |
         sudo apt-get update && sudo apt-get install -y mingw-w64 ninja-build
     
-    - uses: actions/checkout@v3 # needed for pr checkout
+    - uses: actions/checkout@v4 # needed for pr checkout
 
-    - uses: sreimers/pr-dependency-action@v0.5
+    - uses: sreimers/pr-dependency-action@v0.6
       with:
         name: baresip-win32
         repo: https://github.com/baresip/baresip-win32
         secret: ${{ secrets.GITHUB_TOKEN }}
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         path: baresip-win32/re
 
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       id: openssl
       with:
         path: baresip-win32/openssl
@@ -50,7 +56,7 @@ jobs:
       run: |
         cd baresip-win32 && make retest
     
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v4
       with:
         name: retest-exe
         path: baresip-win32/re/build/test/retest.exe
@@ -61,9 +67,9 @@ jobs:
     needs: MinGW-w64-build
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/download-artifact@v2
-    - uses: sreimers/pr-dependency-action@v0.5
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+    - uses: sreimers/pr-dependency-action@v0.6
       with:
         name: re
         repo: https://github.com/baresip/re

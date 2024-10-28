@@ -28,13 +28,19 @@
 #include <re_sa.h>
 #include <re_udp.h>
 #ifdef WIN32
-#if !defined(_MSC_VER)
-typedef UINT32 QOS_FLOWID, *PQOS_FLOWID;
+#ifndef HAVE_QOS_FLOWID
+typedef UINT32 QOS_FLOWID;
+#endif
+
+#ifndef HAVE_PQOS_FLOWID
+typedef UINT32 *PQOS_FLOWID;
+#endif
+
+#include <qos2.h>
+
 #ifndef QOS_NON_ADAPTIVE_FLOW
 #define QOS_NON_ADAPTIVE_FLOW 0x00000002
 #endif
-#endif /*!_MSC_VER*/
-#include <qos2.h>
 #endif /*WIN32*/
 
 #define DEBUG_MODULE "udp"
@@ -65,6 +71,7 @@ struct udp_sock {
 	udp_recv_h *rh;      /**< Receive handler             */
 	udp_error_h *eh;     /**< Error handler               */
 	void *arg;           /**< Handler argument            */
+	struct re_fhs *fhs;
 	re_sock_t fd;        /**< Socket file descriptor      */
 	bool conn;           /**< Connected socket flag       */
 	size_t rxsz;         /**< Maximum receive chunk size  */
@@ -133,7 +140,7 @@ static void udp_destructor(void *data)
 #endif
 
 	if (RE_BAD_SOCK != us->fd) {
-		fd_close(us->fd);
+		us->fhs = fd_close(us->fhs);
 		(void)close(us->fd);
 	}
 }
@@ -228,6 +235,9 @@ static int udp_alloc(struct udp_sock **usp)
 
 	list_init(&us->helpers);
 
+	us->fhs	 = NULL;
+	us->fd	 = RE_BAD_SOCK;
+
 	err = mutex_alloc(&us->lock);
 	if (err) {
 		mem_deref(us);
@@ -261,11 +271,12 @@ int udp_listen(struct udp_sock **usp, const struct sa *local,
 	char serv[6] = "0";
 	int af, error, err = 0;
 
+	if (!usp)
+		return EINVAL;
+
 	err = udp_alloc(&us);
 	if (err)
 		return err;
-
-	us->fd  = RE_BAD_SOCK;
 
 	if (local) {
 		af = sa_af(local);
@@ -274,11 +285,7 @@ int udp_listen(struct udp_sock **usp, const struct sa *local,
 		(void)re_snprintf(serv, sizeof(serv), "%u", sa_port(local));
 	}
 	else {
-#ifdef HAVE_INET6
 		af = AF_UNSPEC;
-#else
-		af = AF_INET;
-#endif
 	}
 
 	memset(&hints, 0, sizeof(hints));
@@ -378,7 +385,6 @@ int udp_alloc_sockless(struct udp_sock **usp,
 	if (err)
 		return err;
 
-	us->fd    = RE_BAD_SOCK;
 	us->sendh = sendh;
 	us->rh    = recvh ? recvh : dummy_udp_recv_handler;
 	us->arg   = arg;
@@ -396,7 +402,7 @@ int udp_alloc_fd(struct udp_sock **usp, re_sock_t fd,
 	struct udp_sock *us;
 	int err;
 
-	if (!usp || fd==RE_BAD_SOCK)
+	if (!usp || fd == RE_BAD_SOCK)
 		return EINVAL;
 
 	err = udp_alloc(&us);
@@ -433,8 +439,6 @@ int udp_open(struct udp_sock **usp, int af)
 	err = udp_alloc(&us);
 	if (err)
 		return err;
-
-	us->fd  = RE_BAD_SOCK;
 
 	fd = socket(af, SOCK_DGRAM, IPPROTO_UDP);
 	if (fd == RE_BAD_SOCK) {
@@ -756,7 +760,8 @@ int udp_thread_attach(struct udp_sock *us)
 		return EINVAL;
 
 	if (RE_BAD_SOCK != us->fd) {
-		err = fd_listen(us->fd, FD_READ, udp_read_handler, us);
+		err = fd_listen(&us->fhs, us->fd, FD_READ, udp_read_handler,
+				us);
 		if (err)
 			goto out;
 	}
@@ -780,7 +785,7 @@ void udp_thread_detach(struct udp_sock *us)
 		return;
 
 	if (RE_BAD_SOCK != us->fd)
-		fd_close(us->fd);
+		us->fhs = fd_close(us->fhs);
 }
 
 

@@ -226,6 +226,60 @@ int conf_get_u32(const struct conf *conf, const char *name, uint32_t *num)
 
 
 /**
+ * Get the numeric signed value of a configuration item
+ *
+ * @param conf Configuration object
+ * @param name Name of config item key
+ * @param num  Returned numeric value of config item, if present
+ *
+ * @return 0 if success, otherwise errorcode
+ */
+int conf_get_i32(const struct conf *conf, const char *name, int32_t *num)
+{
+	struct pl pl;
+	int err;
+
+	if (!conf || !name || !num)
+		return EINVAL;
+
+	err = conf_get(conf, name, &pl);
+	if (err)
+		return err;
+
+	*num = pl_i32(&pl);
+
+	return 0;
+}
+
+
+/**
+ * Get the numeric floating point value of a configuration item
+ *
+ * @param conf Configuration object
+ * @param name Name of config item key
+ * @param num  Returned numeric value of config item, if present
+ *
+ * @return 0 if success, otherwise errorcode
+ */
+int conf_get_float(const struct conf *conf, const char *name, double *num)
+{
+	struct pl opt;
+	int err;
+
+	if (!conf || !name || !num)
+		return EINVAL;
+
+	err = conf_get(conf, name, &opt);
+	if (err)
+		return err;
+
+	*num = pl_float(&opt);
+
+	return 0;
+}
+
+
+/**
  * Get the boolean value of a configuration item
  *
  * @param conf Configuration object

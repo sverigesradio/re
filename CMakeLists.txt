@@ -11,16 +11,16 @@
 # Versioning
 #
 
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.14)
 
 project(re
-  VERSION 3.5.1
+  VERSION 3.16.0
   LANGUAGES C
   HOMEPAGE_URL https://github.com/baresip/re
   DESCRIPTION "Generic library for real-time communications"
 )
 
-set(PROJECT_SOVERSION 17) # bump if ABI breaks
+set(PROJECT_SOVERSION 27) # bump if ABI breaks
 
 # Pre-release identifier, comment out on a release
 # Increment for breaking changes (dev2, dev3...)
@@ -30,6 +30,10 @@ if(PROJECT_VERSION_PRE)
   set(PROJECT_VERSION_FULL ${PROJECT_VERSION}-${PROJECT_VERSION_PRE})
 else()
   set(PROJECT_VERSION_FULL ${PROJECT_VERSION})
+endif()
+
+if(WIN32 AND NOT MINGW)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std:c11")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
@@ -48,7 +52,6 @@ include(CheckCCompilerFlag)
 
 option(USE_REM "Enable Librem" ON)
 option(USE_BFCP "Enable BFCP" ON)
-option(USE_JBUF "Enable JBUF" ON)
 option(USE_PCP "Enable PCP" ON)
 option(USE_RTMP "Enable RTMP" ON)
 option(USE_SIP "Enable SIP" ON)
@@ -71,7 +74,7 @@ else()
     -Wnested-externs
     -Wno-strict-aliasing
     -Wold-style-definition
-    -Wshadow -Waggregate-return
+    -Wshadow
     -Wstrict-prototypes
     -Wuninitialized
     -Wvla
@@ -96,7 +99,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang")
 endif()
 
 set(re_DIR ${CMAKE_CURRENT_LIST_DIR}/cmake)
-find_package(re CONFIG REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/re-config.cmake")
 
 list(APPEND RE_DEFINITIONS
   -DRE_VERSION="${PROJECT_VERSION_FULL}"
@@ -129,6 +132,7 @@ set(HEADERS
   include/re_convert.h
   include/re_crc32.h
   include/re_dbg.h
+  include/re_dd.h
   include/re_dns.h
   include/re_fmt.h
   include/re_h264.h
@@ -138,7 +142,6 @@ set(HEADERS
   include/re_http.h
   include/re_httpauth.h
   include/re_ice.h
-  include/re_jbuf.h
   include/re_json.h
   include/re_list.h
   include/re_main.h
@@ -224,6 +227,10 @@ set(SRCS
 
   src/dbg/dbg.c
 
+  src/dd/dd.c
+  src/dd/dd_enc.c
+  src/dd/putbit.c
+
   src/dns/client.c
   src/dns/cstr.c
   src/dns/dname.c
@@ -240,6 +247,7 @@ set(SRCS
   src/fmt/regex.c
   src/fmt/str.c
   src/fmt/str_error.c
+  src/fmt/text2pcap.c
   src/fmt/time.c
   src/fmt/unicode.c
 
@@ -442,13 +450,6 @@ if(USE_BFCP)
 endif()
 
 
-if(USE_JBUF)
-  list(APPEND SRCS
-    src/jbuf/jbuf.c
-  )
-endif()
-
-
 if(USE_PCP)
   list(APPEND SRCS
     src/pcp/msg.c
@@ -589,6 +590,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     src/dns/darwin/srv.c
     src/net/bsd/brt.c
   )
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "iOS")
+  list(APPEND SRCS
+    src/dns/darwin/srv.c
+  )
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
   list(APPEND SRCS
     src/net/bsd/brt.c
@@ -609,50 +614,6 @@ endif()
 
 if(USE_REM)
   list(APPEND SRCS ${REM_SRCS})
-endif()
-
-
-##############################################################################
-#
-# Linking LIBS
-#
-
-set(LINKLIBS Threads::Threads ${RESOLV_LIBRARY})
-
-if(BACKTRACE_FOUND)
-  list(APPEND LINKLIBS ${Backtrace_LIBRARIES})
-endif()
-
-if(ZLIB_FOUND)
-  list(APPEND LINKLIBS ZLIB::ZLIB)
-endif()
-
-if(USE_OPENSSL)
-  list(APPEND LINKLIBS OpenSSL::SSL OpenSSL::Crypto)
-endif()
-
-if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-  list(APPEND LINKLIBS
-    "-framework SystemConfiguration" "-framework CoreFoundation"
-  )
-endif()
-
-if(WIN32)
-  list(APPEND LINKLIBS
-    qwave
-    iphlpapi
-    wsock32
-    ws2_32
-    dbghelp
-  )
-else()
-  list(APPEND LINKLIBS m)
-endif()
-
-if(UNIX)
-  list(APPEND LINKLIBS
-    ${CMAKE_DL_LIBS}
-  )
 endif()
 
 
@@ -680,7 +641,7 @@ target_include_directories(re-objs PRIVATE
 if(LIBRE_BUILD_SHARED)
   list(APPEND RE_INSTALL_TARGETS re-shared)
   add_library(re-shared SHARED $<TARGET_OBJECTS:re-objs>)
-  target_link_libraries(re-shared PRIVATE ${LINKLIBS})
+  target_link_libraries(re-shared PRIVATE ${RE_LIBS})
   set_target_properties(re-shared PROPERTIES VERSION
     ${PROJECT_SOVERSION}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH})
   set_target_properties(re-shared PROPERTIES SOVERSION ${PROJECT_SOVERSION})
@@ -697,7 +658,7 @@ endif()
 if(LIBRE_BUILD_STATIC)
   list(APPEND RE_INSTALL_TARGETS re)
   add_library(re STATIC $<TARGET_OBJECTS:re-objs>)
-  target_link_libraries(re PUBLIC ${LINKLIBS})
+  target_link_libraries(re PRIVATE ${RE_LIBS})
   target_include_directories(re PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   )
@@ -705,6 +666,9 @@ if(LIBRE_BUILD_STATIC)
 
   if(MSVC)
     set_target_properties(re PROPERTIES OUTPUT_NAME "re-static")
+    if(NOT LIBRE_BUILD_SHARED)
+      set(PC_LIBNAME "re-static")
+    endif()
   endif()
 endif()
 
@@ -717,6 +681,28 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_subdirectory(packaging)
 endif()
 
+if(NOT PC_LIBNAME)
+  set(PC_LIBNAME "re")
+endif()
+set(PC_REQUIRES "")
+set(PC_LINKLIBS "")
+foreach(item IN LISTS RE_LIBS)
+  if(item STREQUAL "Threads::Threads")
+    list(APPEND PC_LINKLIBS ${CMAKE_THREADS_LIBS_INIT})
+  elseif(item STREQUAL "OpenSSL::Crypto")
+    list(APPEND PC_REQUIRES "libcrypto")
+  elseif(item STREQUAL "OpenSSL::SSL")
+    list(APPEND PC_REQUIRES "libssl")
+  elseif(item STREQUAL "ZLIB::ZLIB")
+    list(APPEND PC_REQUIRES "zlib")
+  elseif(item MATCHES "^-|/")
+    list(APPEND PC_LINKLIBS "${item}")
+  else()
+    list(APPEND PC_LINKLIBS "-l${item}")
+  endif()
+endforeach()
+list(JOIN PC_LINKLIBS " " PC_LINKLIBS)
+list(JOIN PC_REQUIRES " " PC_REQUIRES)
 configure_file(packaging/libre.pc.in libre.pc @ONLY)
 
 
@@ -728,6 +714,9 @@ configure_file(packaging/libre.pc.in libre.pc @ONLY)
 
 install(TARGETS ${RE_INSTALL_TARGETS}
   EXPORT libre
+  RUNTIME
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT Libraries
   LIBRARY
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
     COMPONENT Libraries
@@ -746,7 +735,9 @@ install(FILES ${HEADERS}
 
 install(EXPORT libre
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libre
+  FILE libre-targets.cmake
   NAMESPACE libre::
+  COMPONENT Development
 )
 
 if(LIBRE_BUILD_SHARED)
@@ -763,7 +754,9 @@ install(FILES cmake/re-config.cmake
   COMPONENT Development
 )
 
-install(FILES cmake/libre-config.cmake
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/libre-config.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/cmake/libre-config.cmake" @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cmake/libre-config.cmake"
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libre
   COMPONENT Development
 )

@@ -23,6 +23,7 @@ struct rtp_header {
 	uint8_t  pt;        /**< Payload type           */
 	uint16_t seq;       /**< Sequence number        */
 	uint32_t ts;        /**< Timestamp              */
+	uint64_t ts_arrive; /**< Arrival Timestamp      */
 	uint32_t ssrc;      /**< Synchronization source */
 	uint32_t csrc[16];  /**< Contributing sources   */
 	struct {
@@ -267,12 +268,15 @@ int   rtcp_send_app(struct rtp_sock *rs, const char name[4],
 		    const uint8_t *data, size_t len);
 int   rtcp_send_fir(struct rtp_sock *rs, uint32_t ssrc);
 int   rtcp_send_nack(struct rtp_sock *rs, uint16_t fsn, uint16_t blp);
+int   rtcp_send_gnack(struct rtp_sock *rs, uint32_t ssrc, uint16_t fsn,
+		    uint16_t blp);
 int   rtcp_send_pli(struct rtp_sock *rs, uint32_t fb_ssrc);
 int   rtcp_send_fir_rfc5104(struct rtp_sock *rs, uint32_t ssrc,
 			    uint8_t fir_seqn);
 int   rtcp_debug(struct re_printf *pf, const struct rtp_sock *rs);
 void *rtcp_sock(const struct rtp_sock *rs);
 int   rtcp_stats(struct rtp_sock *rs, uint32_t ssrc, struct rtcp_stats *stats);
+int   rtcp_send_bye_packet(struct rtp_sock *rs);
 
 /* RTCP utils */
 int   rtcp_encode(struct mbuf *mb, enum rtcp_type type, uint32_t count, ...);
@@ -310,3 +314,40 @@ static inline int16_t rtp_seq_diff(uint16_t x, uint16_t y)
 {
 	return (int16_t)(y - x);
 }
+
+
+/** NTP Time */
+struct rtp_ntp_time {
+	uint32_t hi;  /**< Seconds since 0h UTC on 1 January 1900 */
+	uint32_t lo;  /**< Fraction of seconds                    */
+};
+
+/** Per-source state information */
+struct rtp_source {
+	struct sa rtp_peer;       /**< IP-address of the RTP source        */
+	uint16_t max_seq;         /**< Highest seq. number seen            */
+	uint32_t cycles;          /**< Shifted count of seq. number cycles */
+	uint32_t base_seq;        /**< Base seq number                     */
+	uint32_t bad_seq;         /**< Last 'bad' seq number + 1           */
+	uint32_t probation;       /**< Sequ. packets till source is valid  */
+	uint32_t received;        /**< Packets received                    */
+	uint32_t expected_prior;  /**< Packet expected at last interval    */
+	uint32_t received_prior;  /**< Packet received at last interval    */
+	int transit;              /**< Relative trans time for prev pkt    */
+	uint32_t jitter;          /**< Estimated jitter                    */
+	size_t rtp_rx_bytes;      /**< Number of RTP bytes received        */
+	uint64_t sr_recv;         /**< When the last SR was received       */
+	struct rtp_ntp_time last_sr;/**< NTP Timestamp from last SR recvd  */
+	uint32_t rtp_ts;          /**< RTP timestamp                       */
+	uint32_t last_rtp_ts;     /**< Last RTP timestamp                  */
+	uint32_t psent;           /**< RTP packets sent                    */
+	uint32_t osent;           /**< RTP octets sent                     */
+};
+
+/* Source */
+void rtp_source_init_seq(struct rtp_source *s, uint16_t seq);
+int  rtp_source_update_seq(struct rtp_source *s, uint16_t seq);
+void rtp_source_calc_jitter(struct rtp_source *s, uint32_t rtp_ts,
+			uint32_t arrival);
+int  rtp_source_calc_lost(const struct rtp_source *s);
+uint8_t rtp_source_calc_fraction_lost(struct rtp_source *s);

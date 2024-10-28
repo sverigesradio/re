@@ -10,17 +10,18 @@ on:
 
 jobs:
   build:
-    runs-on: macos-12
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     env:
       CMAKE_GENERATOR: Ninja
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Test in FreeBSD
       id: test
-      uses: vmactions/freebsd-vm@v0
+      uses: vmactions/freebsd-vm@v1
       with:
         usesh: true
         prepare: |

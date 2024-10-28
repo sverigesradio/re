@@ -1,6 +1,8 @@
 include(CheckIncludeFile)
 include(CheckFunctionExists)
 include(CheckSymbolExists)
+include(CheckTypeSize)
+include(CheckCXXSourceCompiles)
 
 option(USE_MBEDTLS "Enable MbedTLS" OFF)
 
@@ -53,7 +55,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD")
 else()
   check_symbol_exists(res_ninit resolv.h HAVE_RESOLV)
 endif()
-if(HAVE_RESOLV)
+if(HAVE_RESOLV AND ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+  list(APPEND RE_DEFINITIONS HAVE_RESOLV)
+  set(RESOLV_LIBRARY) # Provided by libc
+elseif(HAVE_RESOLV)
   set(RESOLV_LIBRARY resolv)
   list(APPEND RE_DEFINITIONS HAVE_RESOLV)
 else()
@@ -66,14 +71,20 @@ else()
   set(Backtrace_LIBRARIES)
 endif()
 
-check_function_exists(thrd_create HAVE_THREADS)
+check_function_exists(thrd_create HAVE_THREADS_FUN)
+check_include_file(threads.h HAVE_THREADS_H)
+if(HAVE_THREADS_FUN AND HAVE_THREADS_H)
+  set(HAVE_THREADS CACHE BOOL true)
+endif()
 if(HAVE_THREADS)
   list(APPEND RE_DEFINITIONS HAVE_THREADS)
 endif()
 
-check_function_exists(accept4 HAVE_ACCEPT4)
-if(HAVE_ACCEPT4)
-  list(APPEND RE_DEFINITIONS HAVE_ACCEPT4)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+  check_function_exists(accept4 HAVE_ACCEPT4)
+  if(HAVE_ACCEPT4)
+    list(APPEND RE_DEFINITIONS HAVE_ACCEPT4)
+  endif()
 endif()
 
 if(CMAKE_USE_PTHREADS_INIT)
@@ -100,14 +111,12 @@ endif()
 
 list(APPEND RE_DEFINITIONS
   HAVE_ATOMIC
-  HAVE_INET6
   HAVE_SELECT
   )
 
 if(UNIX)
   list(APPEND RE_DEFINITIONS
     HAVE_PWD_H
-    HAVE_ROUTE_LIST
     HAVE_SETRLIMIT
     HAVE_STRERROR_R
     HAVE_STRINGS_H
@@ -119,6 +128,9 @@ if(UNIX)
     )
   if(NOT ANDROID)
     list(APPEND RE_DEFINITIONS HAVE_GETIFADDRS)
+  endif()
+  if(NOT IOS)
+    list(APPEND RE_DEFINITIONS HAVE_ROUTE_LIST)
   endif()
 endif()
 
@@ -135,6 +147,20 @@ if(WIN32)
     WIN32 
     _WIN32_WINNT=0x0600
   )
+
+  unset(CMAKE_EXTRA_INCLUDE_FILES)
+  set(CMAKE_EXTRA_INCLUDE_FILES "winsock2.h;qos2.h")
+  check_type_size("QOS_FLOWID" HAVE_QOS_FLOWID BUILTIN_TYPES_ONLY)
+  check_type_size("PQOS_FLOWID" HAVE_PQOS_FLOWID BUILTIN_TYPES_ONLY)
+  unset(CMAKE_EXTRA_INCLUDE_FILES)
+
+  if(HAVE_QOS_FLOWID)
+    list(APPEND RE_DEFINITIONS HAVE_QOS_FLOWID)
+  endif()
+
+  if(HAVE_PQOS_FLOWID)
+    list(APPEND RE_DEFINITIONS HAVE_PQOS_FLOWID)
+  endif()
 endif()
 
 if(USE_OPENSSL)
@@ -143,7 +169,6 @@ if(USE_OPENSSL)
     USE_OPENSSL
     USE_OPENSSL_AES
     USE_OPENSSL_HMAC
-    USE_OPENSSL_SRTP
     USE_TLS
   )
 endif()
@@ -173,6 +198,8 @@ endif()
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   list(APPEND RE_DEFINITIONS DARWIN)
   include_directories(/opt/local/include)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "iOS")
+  list(APPEND RE_DEFINITIONS DARWIN)
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
   list(APPEND RE_DEFINITIONS FREEBSD)
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD")
@@ -191,5 +218,80 @@ list(APPEND RE_DEFINITIONS
 if(NOT ${CMAKE_BUILD_TYPE} MATCHES "[Rr]el")
   if(Backtrace_FOUND)
     set(CMAKE_ENABLE_EXPORTS ON)
+  endif()
+endif()
+
+
+##############################################################################
+#
+# Linking LIBS
+#
+
+set(RE_LIBS Threads::Threads ${RESOLV_LIBRARY})
+
+if(BACKTRACE_FOUND)
+  list(APPEND RE_LIBS ${Backtrace_LIBRARIES})
+endif()
+
+if(ZLIB_FOUND)
+  list(APPEND RE_LIBS ZLIB::ZLIB)
+endif()
+
+if(USE_OPENSSL)
+  list(APPEND RE_LIBS OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+  list(APPEND RE_LIBS
+    "-framework SystemConfiguration" "-framework CoreFoundation"
+  )
+endif()
+
+if(WIN32)
+  list(APPEND RE_LIBS
+    qwave
+    iphlpapi
+    wsock32
+    ws2_32
+    dbghelp
+  )
+else()
+  list(APPEND RE_LIBS m)
+endif()
+
+if(UNIX)
+  list(APPEND RE_LIBS
+    ${CMAKE_DL_LIBS}
+  )
+endif()
+
+
+##############################################################################
+#
+# Testing Atomic
+#
+
+enable_language(CXX)
+
+set(ATOMIC_TEST_CODE "
+     #include <atomic>
+     #include <cstdint>
+     std::atomic<uint8_t> n8 (0); // riscv64
+     std::atomic<uint64_t> n64 (0); // armel, mipsel, powerpc
+     int main() {
+       ++n8;
+       ++n64;
+       return 0;
+  }")
+
+check_cxx_source_compiles("${ATOMIC_TEST_CODE}" atomic_test)
+
+if(NOT atomic_test)
+  set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} atomic)
+  check_cxx_source_compiles("${ATOMIC_TEST_CODE}" atomic_test_lib)
+  if(NOT atomic_test_lib)
+    message(FATAL_ERROR "No builtin or libatomic support")
+  else()
+    list(APPEND RE_LIBS atomic)
   endif()
 endif()

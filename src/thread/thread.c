@@ -2,6 +2,7 @@
 #include <re_fmt.h>
 #include <re_mem.h>
 #include <re_thread.h>
+#include <re_trace.h>
 #ifdef HAVE_PRCTL
 #include <sys/prctl.h>
 #endif
@@ -93,10 +94,13 @@ static int handler(void *p)
 #elif defined(HAVE_PTHREAD)
 #if defined(OPENBSD)
 	(void)pthread_set_name_np(*th.thr, th.name);
+#elif defined(__NetBSD__)
+	(void)pthread_setname_np(*th.thr, "%s", th.name);
 #else
 	(void)pthread_setname_np(*th.thr, th.name);
 #endif
 #endif
+	RE_TRACE_THREAD_NAME(th.name);
 
 	return th.func(th.arg);
 }

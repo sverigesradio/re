@@ -53,10 +53,13 @@ static const struct test tests[] = {
 	TEST(test_aes),
 	TEST(test_aes_gcm),
 	TEST(test_aubuf),
+	TEST(test_aulength),
 	TEST(test_aulevel),
+	TEST(test_auposition),
 	TEST(test_auresamp),
 	TEST(test_async),
 	TEST(test_av1),
+	TEST(test_dd),
 	TEST(test_base64),
 	TEST(test_bfcp),
 	TEST(test_bfcp_bin),
@@ -79,6 +82,7 @@ static const struct test tests[] = {
 	TEST(test_fmt_human_time),
 	TEST(test_fmt_param),
 	TEST(test_fmt_pl),
+	TEST(test_fmt_pl_alloc_str),
 	TEST(test_fmt_pl_float),
 	TEST(test_fmt_pl_i32),
 	TEST(test_fmt_pl_i64),
@@ -121,11 +125,10 @@ static const struct test tests[] = {
 	TEST(test_httpauth_resp),
 	TEST(test_httpauth_basic_request),
 	TEST(test_httpauth_digest_request),
+	TEST(test_httpauth_digest_response),
+	TEST(test_httpauth_digest_verification),
 	TEST(test_ice_cand),
 	TEST(test_ice_loop),
-	TEST(test_jbuf),
-	TEST(test_jbuf_adaptive),
-	TEST(test_jbuf_adaptive_video),
 	TEST(test_json),
 	TEST(test_json_file),
 	TEST(test_json_unicode),
@@ -157,8 +160,10 @@ static const struct test tests[] = {
 	TEST(test_rtcp_encode),
 	TEST(test_rtcp_encode_afb),
 	TEST(test_rtcp_decode),
+	TEST(test_rtcp_decode_badmsg),
 	TEST(test_rtcp_packetloss),
 	TEST(test_rtcp_twcc),
+	TEST(test_rtcp_loop),
 	TEST(test_sa_class),
 	TEST(test_sa_cmp),
 	TEST(test_sa_decode),
@@ -211,6 +216,7 @@ static const struct test tests[] = {
 	TEST(test_sys_getenv),
 	TEST(test_tcp),
 	TEST(test_telev),
+	TEST(test_text2pcap),
 #ifdef USE_TLS
 	TEST(test_tls),
 	TEST(test_tls_ec),
@@ -839,7 +845,7 @@ int test_multithread(void)
 	for (i=0; i<RE_ARRAY_SIZE(threadv); i++) {
 
 		if (threadv[i].err != 0) {
-			re_printf("%u failed: %-30s  [%d] [%m]\n", i,
+			re_printf("%zu failed: %-30s  [%d] [%m]\n", i,
 				  threadv[i].test->name,
 				  threadv[i].err, threadv[i].err);
 			err = threadv[i].err;

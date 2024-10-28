@@ -252,29 +252,55 @@ size_t aufile_get_size(struct aufile *af)
  *
  * @return length in ms if success, otherwise 0.
  */
-size_t aufile_get_length(struct aufile *af, struct aufile_prm *prm)
+size_t aufile_get_length(struct aufile *af, const struct aufile_prm *prm)
 {
-	if (!af)
+	if (!af || !prm)
 		return 0;
 
-	switch (prm->fmt) {
-		case AUFMT_PCMA:
-		case AUFMT_PCMU:
-			return af->datasize * prm->channels * prm->srate
-				/ 1000;
-		case AUFMT_S16LE:
-			return af->datasize * 2 * prm->channels * prm->srate
-				/ 1000;
-		case AUFMT_S24_3LE:
-			return af->datasize * 3 * prm->channels * prm->srate
-				/ 1000;
-		case AUFMT_S32LE:
-		case AUFMT_FLOAT:
-			return af->datasize * 4 * prm->channels * prm->srate
-			/ 1000;
-		default:
-			return 0;
-	}
+	size_t sample_size = aufmt_sample_size(prm->fmt);
+
+	if (sample_size == 0)
+		return 0;
+
+	return af->datasize * 1000 / (sample_size *
+		prm->channels * prm->srate);
+}
+
+/**
+ * Set initial playing position of a WAV file in ms
+ *
+ * @param af  Audio-file
+ * @param prm Audio file parameters from aufile_open
+ * @param pos_ms Playing position in milliseconds
+ *
+ * @return 0 if success, otherwise errorcode
+ */
+int aufile_set_position(struct aufile *af, const struct aufile_prm *prm,
+						   size_t pos_ms)
+{
+	if (!af || !prm)
+		return EINVAL;
+
+	if (fseek(af->f, 0, SEEK_SET) < 0)
+		return errno;
+
+	/* this is only used for the side effect of moving the file ptr to the
+	   first data block. */
+	struct wav_fmt fmt;
+	size_t datasize;
+	int err = wav_header_decode(&fmt, &datasize, af->f);
+	if (err)
+		return err;
+
+	off_t pos = (off_t)(prm->srate * aufmt_sample_size(prm->fmt)
+		* prm->channels * pos_ms / 1000);
+
+	pos = min((off_t)datasize, pos);
+
+	if (fseek(af->f, pos, SEEK_CUR) < 0)
+		return errno;
+
+	af->nread = pos;
 
 	return 0;
 }

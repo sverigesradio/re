@@ -233,7 +233,7 @@ static int request(struct sip_request *req, enum sip_transp tp,
 	}
 
 	if (!req->stateful) {
-		err = sip_send_conn(req->sip, NULL, tp, dst, mb,
+		err = sip_send_conn(req->sip, NULL, tp, dst, req->host, mb,
 				    connect_handler, req);
 	}
 	else {
@@ -406,7 +406,6 @@ static bool rr_cache_handler(struct dnsrr *rr, void *arg)
 		list_append(&req->cachel, &rr->le_priv, rr);
 		break;
 
-#ifdef HAVE_INET6
 	case DNS_TYPE_AAAA:
 		if (!sip_transp_supported(req->sip, req->tp, AF_INET6))
 			break;
@@ -414,7 +413,6 @@ static bool rr_cache_handler(struct dnsrr *rr, void *arg)
 		list_unlink(&rr->le_priv);
 		list_append(&req->cachel, &rr->le_priv, rr);
 		break;
-#endif
 
 	case DNS_TYPE_CNAME:
 		list_unlink(&rr->le_priv);
@@ -626,7 +624,6 @@ static int addr_lookup(struct sip_request *req, const char *name)
 			return err;
 	}
 
-#ifdef HAVE_INET6
 	if (sip_transp_supported(req->sip, req->tp, AF_INET6)) {
 
 		err = dnsc_query(&req->dnsq2, req->sip->dnsc, name,
@@ -635,7 +632,6 @@ static int addr_lookup(struct sip_request *req, const char *name)
 		if (err)
 			return err;
 	}
-#endif
 
 	if (!req->dnsq && !req->dnsq2)
 		return EPROTONOSUPPORT;
@@ -731,6 +727,8 @@ static int sip_request_send(struct sip_request *req, struct sip *sip,
 {
 	struct sa dst;
 	int err;
+	bool addr_only = req->tp_selected &&
+		dnsc_getaddrinfo_only(req->sip->dnsc);
 
 	if (!sa_set_str(&dst, req->host,
 			sip_transp_port(req->tp, route->port))) {
@@ -741,7 +739,7 @@ static int sip_request_send(struct sip_request *req, struct sip *sip,
 			return err;
 		}
 	}
-	else if (route->port) {
+	else if (route->port || addr_only){
 
 		req->port = sip_transp_port(req->tp, route->port);
 		err = addr_lookup(req, req->host);
@@ -970,10 +968,25 @@ void sip_request_cancel(struct sip_request *req)
 
 	req->canceled = true;
 
-	if (!req->provrecv)
+	if (!req->provrecv) {
+		req->ct = mem_deref(req->ct);
 		return;
+	}
 
 	(void)sip_ctrans_cancel(req->ct);
+}
+
+
+/**
+ * Check if a provisional response was received for a SIP Request
+ *
+ * @param req SIP Request
+ *
+ * @return True if a provisional response was received, false otherwise
+ */
+bool sip_request_provrecv(const struct sip_request *req)
+{
+	return req ? req->provrecv : false;
 }
 
 

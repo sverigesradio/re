@@ -6,7 +6,6 @@
 
 #include <string.h>
 #include <re.h>
-#include <re_h264.h>
 #include <rem.h>
 #include "test.h"
 
@@ -14,6 +13,9 @@
 #define DEBUG_MODULE "h264test"
 #define DEBUG_LEVEL 5
 #include <re_dbg.h>
+
+
+enum { DUMMY_TS = 36000 };
 
 
 #if 0
@@ -67,6 +69,51 @@ static void dump_rtp(const uint8_t *p, size_t size)
 #endif
 
 
+static int test_h264_stap_a_encode_base(const uint8_t *frame, size_t len,
+				   bool long_startcode)
+{
+	enum { MAX_NRI = 3 };
+	struct mbuf *mb_pkt   = mbuf_alloc(256);
+	struct mbuf *mb_frame = mbuf_alloc(256);
+	struct h264_nal_header hdr;
+	int err;
+
+	if (!mb_pkt || !mb_frame) {
+		err = ENOMEM;
+		goto out;
+	}
+
+	err = h264_stap_encode(mb_pkt, frame, len);
+	if (err)
+		goto out;
+
+	mb_pkt->pos = 0;
+
+	err = h264_nal_header_decode(&hdr, mb_pkt);
+	ASSERT_EQ(0, err);
+
+	ASSERT_EQ(MAX_NRI,          hdr.nri);              /* NOTE: max NRI */
+	ASSERT_EQ(H264_NALU_STAP_A, hdr.type);
+
+	if (long_startcode) {
+		err = h264_stap_decode_annexb_long(mb_frame, mb_pkt);
+		ASSERT_EQ(0, err);
+	}
+	else {
+		err = h264_stap_decode_annexb(mb_frame, mb_pkt);
+		ASSERT_EQ(0, err);
+	}
+
+	TEST_MEMCMP(frame, len, mb_frame->buf, mb_frame->end);
+
+ out:
+	mem_deref(mb_frame);
+	mem_deref(mb_pkt);
+
+	return err;
+}
+
+
 static int test_h264_stap_a_encode(void)
 {
 	static const uint8_t frame[] = {
@@ -87,38 +134,34 @@ static int test_h264_stap_a_encode(void)
 		0x00, 0x00, 0x01,
 		0x65, 0xb8, 0x00, 0x04, 0x00, 0x00, 0x05, 0x39,
 	};
-#define MAX_NRI 3
-	struct mbuf *mb_pkt   = mbuf_alloc(256);
-	struct mbuf *mb_frame = mbuf_alloc(256);
-	struct h264_nal_header hdr;
+	static const uint8_t frame_long[] = {
+
+		/* AUD */
+		0x00, 0x00, 0x00, 0x01,
+		0x09, 0x10,
+
+		/* SPS */
+		0x00, 0x00, 0x00, 0x01,
+		0x67, 0x42, 0xc0, 0x1f, 0x8c, 0x8d, 0x40,
+
+		/* PPS */
+		0x00, 0x00, 0x00, 0x01,
+		0x68, 0xce, 0x3c, 0x80,
+
+		/* IDR_SLICE */
+		0x00, 0x00, 0x00, 0x01,
+		0x65, 0xb8, 0x00, 0x04, 0x00, 0x00, 0x05, 0x39,
+	};
 	int err;
 
-	if (!mb_pkt || !mb_frame) {
-		err = ENOMEM;
-		goto out;
-	}
+	err = test_h264_stap_a_encode_base(frame, sizeof(frame), false);
+	TEST_ERR(err);
 
-	err = h264_stap_encode(mb_pkt, frame, sizeof(frame));
-	if (err)
-		goto out;
-
-	mb_pkt->pos = 0;
-
-	err = h264_nal_header_decode(&hdr, mb_pkt);
-	ASSERT_EQ(0, err);
-
-	ASSERT_EQ(MAX_NRI,          hdr.nri);              /* NOTE: max NRI */
-	ASSERT_EQ(H264_NALU_STAP_A, hdr.type);
-
-	err = h264_stap_decode_annexb(mb_frame, mb_pkt);
-	ASSERT_EQ(0, err);
-
-	TEST_MEMCMP(frame, sizeof(frame), mb_frame->buf, mb_frame->end);
+	err = test_h264_stap_a_encode_base(frame_long, sizeof(frame_long),
+					   true);
+	TEST_ERR(err);
 
  out:
-	mem_deref(mb_frame);
-	mem_deref(mb_pkt);
-
 	return err;
 }
 
@@ -176,11 +219,10 @@ static int test_h264_stap_a_decode(void)
 int test_h264(void)
 {
 	struct h264_nal_header hdr, hdr2;
-	struct mbuf *mb;
 	static const uint8_t nal = 0x25;
 	int err;
 
-	mb = mbuf_alloc(1);
+	struct mbuf *mb = mbuf_alloc(1);
 	if (!mb)
 		return ENOMEM;
 
@@ -486,6 +528,7 @@ struct state {
 	struct mbuf *mb;
 	size_t frag_start;
 	bool frag;
+	bool long_startcode;
 
 	/* test */
 	uint8_t buf[256];
@@ -505,8 +548,11 @@ static void fragment_rewind(struct state *vds)
 static int depack_handle_h264(struct state *st, bool marker,
 			      struct mbuf *src)
 {
-	static const uint8_t nal_seq[3] = {0, 0, 1};
+	static const uint8_t nal_seq3[3] = {0, 0, 1};
+	static const uint8_t nal_seq4[4] = {0, 0, 0, 1};
 	struct h264_nal_header h264_hdr;
+	size_t nal_seq_len = st->long_startcode ?
+		sizeof(nal_seq4) : sizeof(nal_seq3);
 	int err;
 
 	err = h264_nal_header_decode(&h264_hdr, src);
@@ -532,7 +578,9 @@ static int depack_handle_h264(struct state *st, bool marker,
 		--src->pos;
 
 		/* prepend H.264 NAL start sequence */
-		err  = mbuf_write_mem(st->mb, nal_seq, sizeof(nal_seq));
+		err  = mbuf_write_mem(st->mb,
+				      st->long_startcode ? nal_seq4 : nal_seq3,
+				      nal_seq_len);
 
 		err |= mbuf_write_mem(st->mb, mbuf_buf(src),
 				      mbuf_get_left(src));
@@ -560,7 +608,9 @@ static int depack_handle_h264(struct state *st, bool marker,
 			st->frag = true;
 
 			/* prepend H.264 NAL start sequence */
-			mbuf_write_mem(st->mb, nal_seq, sizeof(nal_seq));
+			mbuf_write_mem(st->mb,
+			       st->long_startcode ? nal_seq4 : nal_seq3,
+			       nal_seq_len);
 
 			/* encode NAL header back to buffer */
 			err = h264_nal_header_encode(st->mb, &h264_hdr);
@@ -585,28 +635,12 @@ static int depack_handle_h264(struct state *st, bool marker,
 	}
 	else if (H264_NALU_STAP_A == h264_hdr.type) {
 
-		while (mbuf_get_left(src) >= 2) {
-
-			uint16_t len = ntohs(mbuf_read_u16(src));
-			struct h264_nal_header lhdr;
-
-			if (mbuf_get_left(src) < len)
-				return EBADMSG;
-
-			err = h264_nal_header_decode(&lhdr, src);
-			if (err)
-				return err;
-
-			--src->pos;
-
-			err  = mbuf_write_mem(st->mb,
-					      nal_seq, sizeof(nal_seq));
-			err |= mbuf_write_mem(st->mb, mbuf_buf(src), len);
-			if (err)
-				goto out;
-
-			src->pos += len;
-		}
+		if (st->long_startcode)
+			err = h264_stap_decode_annexb_long(st->mb, src);
+		else
+			err = h264_stap_decode_annexb(st->mb, src);
+		if (err)
+			goto out;
 	}
 	else {
 		DEBUG_WARNING("decode: unknown NAL type %u\n",
@@ -629,9 +663,6 @@ static int depack_handle_h264(struct state *st, bool marker,
 }
 
 
-enum { DUMMY_TS = 36000 };
-
-
 static int packet_handler(bool marker, uint64_t rtp_ts,
 			  const uint8_t *hdr, size_t hdr_len,
 			  const uint8_t *pld, size_t pld_len,
@@ -639,7 +670,7 @@ static int packet_handler(bool marker, uint64_t rtp_ts,
 {
 	struct state *state = arg;
 	struct mbuf *mb_pkt = mbuf_alloc(hdr_len + pld_len);
-	int err;
+	int err = 0;
 
 	if (!mb_pkt)
 		return ENOMEM;
@@ -648,8 +679,12 @@ static int packet_handler(bool marker, uint64_t rtp_ts,
 
 	++state->count;
 
-	err  = mbuf_write_mem(mb_pkt, hdr, hdr_len);
-	err |= mbuf_write_mem(mb_pkt, pld, pld_len);
+	if (hdr && hdr_len)
+		err |= mbuf_write_mem(mb_pkt, hdr, hdr_len);
+
+	if (pld && pld_len)
+		err |= mbuf_write_mem(mb_pkt, pld, pld_len);
+
 	if (err)
 		goto out;
 
@@ -663,21 +698,18 @@ static int packet_handler(bool marker, uint64_t rtp_ts,
 }
 
 
-/* bitstream in Annex-B format (with startcode 00 00 01) */
-static const char *bitstream = "000001650010e2238712983719283719823798";
-
-
-int test_h264_packet(void)
+static int test_h264_packet_base(const char *bs, bool long_startcode,
+				 size_t max_pktsize)
 {
 	struct state state;
-	const size_t pktsize = 8;
 	int err;
 
 	memset(&state, 0, sizeof(state));
 
-	state.len = strlen(bitstream)/2;
+	state.long_startcode = long_startcode;
+	state.len = strlen(bs)/2;
 
-	err = str_hex(state.buf, state.len, bitstream);
+	err = str_hex(state.buf, state.len, bs);
 	if (err)
 		return err;
 
@@ -685,7 +717,7 @@ int test_h264_packet(void)
 	if (!state.mb)
 		return ENOMEM;
 
-	err = h264_packetize(DUMMY_TS, state.buf, state.len, pktsize,
+	err = h264_packetize(DUMMY_TS, state.buf, state.len, max_pktsize,
 			     packet_handler, &state);
 	if (err)
 		goto out;
@@ -696,5 +728,35 @@ int test_h264_packet(void)
  out:
 	mem_deref(state.mb);
 
+	return err;
+}
+
+
+/* bitstream in Annex-B format (with startcode 00 00 01) */
+static const char *bitstream =
+	"0000016701020304"
+	"0000016801020304"
+	"000001650010e2238712983719283719823798";
+
+
+/* bitstream in Annex-B format (with startcode 00 00 00 01) */
+static const char *bitstream_long =
+	"000000016701020304"
+	"000000016801020304"
+	"00000001650010e2238712983719283719823798";
+
+
+int test_h264_packet(void)
+{
+	const size_t MAX_PKTSIZE = 8;
+	int err;
+
+	err = test_h264_packet_base(bitstream, false, MAX_PKTSIZE);
+	TEST_ERR(err);
+
+	err = test_h264_packet_base(bitstream_long, true, MAX_PKTSIZE);
+	TEST_ERR(err);
+
+ out:
 	return err;
 }

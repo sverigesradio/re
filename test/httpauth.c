@@ -45,6 +45,9 @@ static bool chall_equal(const struct httpauth_digest_chall *a,
 	err |= pl_equal("stale",     &a->stale,     &b->stale);
 	err |= pl_equal("algorithm", &a->algorithm, &b->algorithm);
 	err |= pl_equal("qop",       &a->qop,       &b->qop);
+	err |= pl_equal("domain",    &a->domain,    &b->domain);
+	err |= pl_equal("charset",   &a->charset,   &b->charset);
+	err |= pl_equal("userhash",  &a->userhash,  &b->userhash);
 
 	return err == 0;
 }
@@ -168,8 +171,8 @@ int test_httpauth_resp(void)
 			 PL("sip:creytiv.com;transport=udp"),
 			 PL("00000002"),
 			 PL("66a7a21e46ad8edd"),
-			 PL("auth"),
-			 NULL},
+			 PL("auth"), PL_INIT, PL_INIT,
+			 PL_INIT, NULL, 0, NULL},
 			PL("REGISTER"),
 			"\x1c\x0a\x98\x61\x5b\x7b\x37\xc6"
 			"\x94\x51\xae\xb6\x4b\x2f\x11\x02",
@@ -177,8 +180,9 @@ int test_httpauth_resp(void)
 		},
 		{
 			"Digest bogus tull",
-			{PL_INIT, PL_INIT, PL_INIT, PL_INIT,
-			 PL_INIT, PL_INIT, PL_INIT, PL_INIT, NULL},
+			{PL_INIT, PL_INIT, PL_INIT, PL_INIT, PL_INIT,
+			 PL_INIT, PL_INIT, PL_INIT, PL_INIT, PL_INIT,
+			 PL_INIT, NULL, 0 , NULL},
 			PL_INIT,
 			"",
 			EBADMSG
@@ -371,38 +375,23 @@ int test_httpauth_digest_request(void)
 		},
 		{
 			"Digest realm=\"/my/home\", qop=\"auth\","
-			" nonce=\"%s\", algorithm=SHA256",
+			" nonce=\"%s\", algorithm=SHA-256",
 			"/my/home", NULL, "localhost:5060", NULL, false,
-			"SHA256", "auth", NULL, false, 0
+			"SHA-256", "auth", NULL, false, 0
 		},
 		{
 			"Digest realm=\"/my/home\", qop=\"auth\","
-			" nonce=\"%s\", algorithm=SHA256-sess, stale=true",
+			" nonce=\"%s\", algorithm=SHA-256-sess, stale=true",
 			"/my/home", NULL, "localhost:5060", NULL, true,
-			"SHA256-sess", "auth", NULL, false, 0
+			"SHA-256-sess", "auth", NULL, false, 0
 		},
 		{
 			"Digest realm=\"/my/home\", qop=\"auth\","
-			" nonce=\"%s\", algorithm=SHA1,"
-			" stale=true, userhash=true",
-			"/my/home", NULL, "localhost:5060", NULL, true,
-			"SHA1", "auth", NULL, true, 0
-		},
-		{
-			"Digest realm=\"/my/home\", qop=\"auth\","
-			" nonce=\"%s\", algorithm=SHA1-sess,"
+			" nonce=\"%s\", algorithm=SHA-256,"
 			" domain=\"example.com\", stale=true,"
 			" charset=\"UTF-8\", userhash=true",
 			"/my/home", "example.com", "localhost:5060", NULL,
-			true, "SHA1-sess", "auth", "UTF-8", true, 0
-		},
-		{
-			"Digest realm=\"/my/home\", qop=\"auth\","
-			" nonce=\"%s\", algorithm=SHA256,"
-			" domain=\"example.com\", stale=true,"
-			" charset=\"UTF-8\", userhash=true",
-			"/my/home", "example.com", "localhost:5060", NULL,
-			true, "SHA256", "auth", "UTF-8", true, 0
+			true, "SHA-256", "auth", "UTF-8", true, 0
 		},
 		{
 			"Digest realm=\"/my/home\", qop=\"auth-int\","
@@ -411,14 +400,6 @@ int test_httpauth_digest_request(void)
 			" charset=\"UTF-8\", userhash=true",
 			"/my/home", "example.com", "localhost:5060", NULL,
 			true, "MD5-sess", "auth-int", "UTF-8", true, 0
-		},
-		{
-			"Digest realm=\"/my/home\", qop=\"auth-int\","
-			" nonce=\"%s\", algorithm=SHA1-sess,"
-			" domain=\"example.com\", stale=true,"
-			" charset=\"UTF-8\", userhash=true",
-			"/my/home", "example.com", "213579023", NULL,
-			true, "SHA1-sess", "auth-int", "UTF-8", true, 0
 		},
 		{
 			"Digest realm=\"/my/home\", qop=\"auth-int\","
@@ -431,7 +412,7 @@ int test_httpauth_digest_request(void)
 	};
 
 	int err = 0;
-	for (unsigned int i = 0; i < RE_ARRAY_SIZE(testv); i++) {
+	for (size_t i = 0; i < RE_ARRAY_SIZE(testv); i++) {
 		struct httpauth_digest_chall_req *req = NULL;
 		struct mbuf *mb_refval = NULL;
 		struct mbuf *mb_printed = NULL;
@@ -440,7 +421,7 @@ int test_httpauth_digest_request(void)
 		mb_printed = mbuf_alloc(512);
 		if (!mb_refval || !mb_printed) {
 			err = ENOMEM;
-			goto for_out;
+			goto out;
 		}
 
 		err = httpauth_digest_chall_request_full(&req, testv[i].realm,
@@ -448,7 +429,7 @@ int test_httpauth_digest_request(void)
 			testv[i].stale, testv[i].algorithm, testv[i].qop,
 			testv[i].charset, testv[i].userhash);
 		if (err == ENOMEM) {
-			goto for_out;
+			goto out;
 		}
 		else if (err != testv[i].err) {
 			DEBUG_WARNING("[%d]"
@@ -463,7 +444,7 @@ int test_httpauth_digest_request(void)
 		if (err) {
 			DEBUG_WARNING("[%d]"
 				" No reference created %m\n", i, err);
-			goto for_out;
+			goto out;
 		}
 
 		err = mbuf_printf(mb_printed, "%H",
@@ -471,14 +452,14 @@ int test_httpauth_digest_request(void)
 		if (err) {
 			DEBUG_WARNING("[%d]"
 				" Digest request print error %m\n", i, err);
-			goto for_out;
+			goto out;
 		}
 
 		if (mb_refval->end != mb_printed->end) {
 			DEBUG_WARNING("[%d] Expected header len %d, got %d\n",
 				i, mb_refval->end, mb_printed->end);
 				err = EINVAL;
-				goto for_out;
+				goto out;
 		}
 
 		if (memcmp(mb_refval->buf, mb_printed->buf, mb_refval->end)) {
@@ -486,7 +467,7 @@ int test_httpauth_digest_request(void)
 				mb_refval->buf, mb_refval->end,
 				mb_printed->buf, mb_printed->end);
 			err = EINVAL;
-			goto for_out;
+			goto out;
 		}
 
 for_continue:
@@ -495,10 +476,369 @@ for_continue:
 		mem_deref(mb_printed);
 		continue;
 
-for_out:
+out:
 		mem_deref(req);
 		mem_deref(mb_refval);
 		mem_deref(mb_printed);
+		break;
+	}
+
+	return err;
+}
+
+
+int test_httpauth_digest_response(void)
+{
+	static const struct {
+		const struct httpauth_digest_chall chall;
+		const char *user;
+		const char *passwd;
+		const char *qop;
+		const struct pl method;
+		const char *uri;
+		const char *entitybody;
+		const char *precalc_digest;
+		const char *resp_hval;
+	} testv [] = {
+		{
+			{
+				PL("/my/home"),
+				PL("b5c64f319d37323ac652b77012817ccaa"
+				"6e9a7e4e7563155f1f9556414dd4615"),
+				PL("324DF3428BCF42D29A"), PL_INIT,
+				PL("MD5"), PL("auth"), PL_INIT, PL_INIT,
+				PL_INIT
+			},
+			"retest", "sec_pwd_retest", "auth", PL("GET"),
+			"example.com/my/home/something", NULL,
+			"88f41f7227700e07d0d65256714a5a1a",
+
+			"Digest realm=\"/my/home\","
+			" nonce=\"b5c64f319d37323ac652b77012817ccaa6e"
+			"9a7e4e7563155f1f9556414dd4615\","
+			" username=\"retest\","
+			" uri=\"example.com/my/home/something\","
+			" response=\"88f41f7227700e07d0d65256714a5a1a\","
+			" opaque=\"324DF3428BCF42D29A\", algorithm=MD5,"
+			" qop=auth, cnonce=\"deadbeef\", nc=\"00000001\"",
+		},
+		{
+			{
+				PL("/my/home"),
+				PL("b5c64f319d37323ac652b77012817ccaa"
+				"6e9a7e4e7563155f1f9556414dd4615"),
+				PL("324DF3428BCF42D29A"), PL_INIT,
+				PL("SHA-256"), PL("auth"), PL_INIT, PL_INIT,
+				PL_INIT
+			},
+			"retest", "sec_pwd_retest", "auth", PL("GET"),
+			"example.com/my/home/something", NULL,
+			"c22b56ce81bbb59570f0fbbc0ba27210dbbfcb2b23fe"
+			"a371d214722f319dc41c",
+
+			"Digest realm=\"/my/home\","
+			" nonce=\"b5c64f319d37323ac652b77012817ccaa6e"
+			"9a7e4e7563155f1f9556414dd4615\", username=\"retest\","
+			" uri=\"example.com/my/home/something\","
+			" response=\"c22b56ce81bbb59570f0fbbc0ba27210dbbfcb2b2"
+			"3fea371d214722f319dc41c\","
+			" opaque=\"324DF3428BCF42D29A\", algorithm=SHA-256,"
+			" qop=auth, cnonce=\"deadbeef\", nc=\"00000001\"",
+		},
+		{
+			{
+				PL("/my/home"),
+				PL("b5c64f319d37323ac652b77012817ccaa"
+				"6e9a7e4e7563155f1f9556414dd4615"),
+				PL("324DF3428BCF42D29A"), PL_INIT,
+				PL("MD5-sess"), PL("auth"), PL_INIT, PL_INIT,
+				PL_INIT
+			},
+			"retest", "sec_pwd_retest", "auth", PL("GET"),
+			"example.com/my/home/something", NULL,
+			"1e79ac7105a4fdf416aaacfc50349110",
+
+			"Digest realm=\"/my/home\","
+			" nonce=\"b5c64f319d37323ac652b77012817ccaa6e9a7e4e756"
+			"3155f1f9556414dd4615\", username=\"retest\","
+			" uri=\"example.com/my/home/something\","
+			" response=\"1e79ac7105a4fdf416aaacfc50349110\","
+			" opaque=\"324DF3428BCF42D29A\", algorithm=MD5-sess,"
+			" qop=auth, cnonce=\"deadbeef\", nc=\"00000001\"",
+		},
+		{
+			{
+				PL("/my/home"),
+				PL("b5c64f319d37323ac652b77012817ccaa"
+				"6e9a7e4e7563155f1f9556414dd4615"),
+				PL("324DF3428BCF42D29A"), PL_INIT,
+				PL("SHA-256"), PL("auth-int"), PL_INIT,
+				PL_INIT, PL_INIT
+			},
+			"retest", "sec_pwd_retest", "auth-int", PL("GET"),
+			"example.com/my/home/something", "",
+			"2c0746b7174441314164d8d9a980d8920732de32e163"
+			"03f0e6a82970230e79e4",
+
+			"Digest realm=\"/my/home\","
+			" nonce=\"b5c64f319d37323ac652b77012817ccaa6e9a7e4e756"
+			"3155f1f9556414dd4615\", username=\"retest\","
+			" uri=\"example.com/my/home/something\","
+			" response=\"2c0746b7174441314164d8d9a980d8920732de32e"
+			"16303f0e6a82970230e79e4\","
+			" opaque=\"324DF3428BCF42D29A\", algorithm=SHA-256,"
+			" qop=auth-int, cnonce=\"deadbeef\", nc=\"00000001\"",
+		},
+	};
+
+	int err = 0;
+
+	for (size_t i = 0; i < RE_ARRAY_SIZE(testv); i++) {
+		struct httpauth_digest_enc_resp *resp = NULL;
+		struct mbuf *mb_printed = NULL;
+
+		mb_printed = mbuf_alloc(512);
+		if (!mb_printed) {
+			err = ENOMEM;
+			goto out;
+		}
+
+		err = httpauth_digest_response_full(&resp, &testv[i].chall,
+			&testv[i].method, testv[i].uri, testv[i].user,
+			testv[i].passwd, testv[i].qop, testv[i].entitybody,
+			NULL, false);
+		if (err == ENOMEM) {
+			goto out;
+		}
+		else if (err) {
+			DEBUG_WARNING("[%d]"
+				" Could not generate response %m\n", i, err);
+			goto out;
+		}
+
+		err = httpauth_digest_response_set_cnonce(resp,
+			&testv[i].chall, &testv[i].method, testv[i].user,
+			testv[i].passwd, testv[i].entitybody,
+			0xdeadbeef, 0x00000001);
+		if (err) {
+			DEBUG_WARNING("[%d]"
+				" Response recalculation failed %m\n", i, err);
+			goto out;
+		}
+
+		err = mbuf_printf(mb_printed, "%H",
+			httpauth_digest_response_print, resp);
+		if (err)
+			goto out;
+
+		if (str_casecmp(resp->response,
+			testv[i].precalc_digest) != 0) {
+			err = EINVAL;
+			DEBUG_WARNING("[%d]"
+				" Expected response %s, got %w\n", i,
+				testv[i].precalc_digest,
+				resp->response, resp->hash_length);
+			goto out;
+		}
+
+		if (memcmp(testv[i].resp_hval,
+			mb_printed->buf, mb_printed->end)) {
+			err = EINVAL;
+			DEBUG_WARNING("[%d]"
+				" Expected header %s, got %b\n",
+				i, testv[i].resp_hval,
+				mb_printed->buf, mb_printed->end);
+			goto out;
+		}
+
+		mem_deref(mb_printed);
+		mem_deref(resp);
+		continue;
+
+out:
+		mem_deref(mb_printed);
+		mem_deref(resp);
+		break;
+	}
+
+	return err;
+}
+
+
+int test_httpauth_digest_verification(void)
+{
+	static const struct {
+		const char *realm;
+		const char *domain;
+		const char *opaque;
+		const bool stale;
+		const char *algorithm;
+		const char *qop;
+		const char *charset;
+		const bool userhash;
+
+		const char *etag;
+		const char *entitybody;
+
+		const char *user;
+		const char *passwd;
+		const char *uri;
+		const struct pl method;
+		const char *huser;
+	} testv [] = {
+		/* qop=auth & normal algorithm */
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "MD5", "auth", NULL, false,
+			"localhost:5060", NULL, "retest", "sec_passwd",
+			"example.com/my/home/something", PL("GET"), NULL,
+		},
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "SHA-256", "auth", NULL, false,
+			"localhost:5060", NULL, "retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+		/* qop=auth & session algorithm */
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "MD5-sess", "auth", NULL, false,
+			"localhost:5060", NULL, "retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "SHA-256-sess", "auth", NULL, false,
+			"localhost:5060", NULL, "retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+		/* qop=auth-int & normal algorithm */
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "MD5", "auth-int", NULL, false,
+			"localhost:5060", NULL, "retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "SHA-256", "auth-int", NULL, false,
+			"localhost:5060", "Strange body with content",
+			"retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+		/* qop=auth-int & session algorithm */
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "MD5-sess", "auth-int", NULL, false,
+			"localhost:5060", "NOT NULL", "retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+		{
+			"/my/home", "example.com",
+			"185803523d335c8fe52cf633391d47f7",
+			false, "SHA-256-sess", "auth-int", NULL, false,
+			"localhost:5060", "NULL as String :D",
+			"retest", "sec_passed",
+			"example.com/my/home/something", PL("GET"), NULL
+		},
+	};
+
+	int err = 0;
+	for (size_t i = 0; i < RE_ARRAY_SIZE(testv); i++) {
+		struct httpauth_digest_chall_req *req = NULL;
+		struct httpauth_digest_enc_resp *resp = NULL;
+		struct httpauth_digest_chall chall;
+		struct mbuf *mb_req = NULL;
+		struct mbuf *mb_resp = NULL;
+		struct pl plreq;
+		struct pl plresp;
+
+		mb_req = mbuf_alloc(512);
+		mb_resp = mbuf_alloc(512);
+		if (!mb_req || !mb_resp) {
+			err = ENOMEM;
+			DEBUG_WARNING("[%d]"
+				" Could not allocate memory buffers \n", i);
+			goto out;
+		}
+
+		err = httpauth_digest_chall_request_full(&req, testv[i].realm,
+			testv[i].domain, testv[i].etag, testv[i].opaque,
+			testv[i].stale, testv[i].algorithm, testv[i].qop,
+			testv[i].charset, testv[i].userhash);
+		if (err) {
+			DEBUG_WARNING("[%d]"
+				" Could not generate request (%m)\n", i, err);
+			goto out;
+		}
+
+		err = mbuf_printf(mb_req, "%H",
+			httpauth_digest_chall_req_print, req);
+		if (err) {
+			DEBUG_WARNING("[%d]"
+				" Could not write digest request (%m)",
+				i, err);
+			goto out;
+		}
+
+		mbuf_set_pos(mb_req, 0);
+		pl_set_mbuf(&plreq, mb_req);
+		err = httpauth_digest_challenge_decode(&chall, &plreq);
+		if (err) {
+			DEBUG_WARNING("[%d] Could not"
+				" decode \"received\" challenge (%m)",
+				i, err);
+			goto out;
+		}
+
+		err = httpauth_digest_response_full(&resp, &chall,
+			&testv[i].method, testv[i].uri, testv[i].user,
+			testv[i].passwd, testv[i].qop, testv[i].entitybody,
+			testv[i].charset, testv[i].userhash);
+		if (err) {
+			DEBUG_WARNING("[%d]"
+				" Could not generate response (%m)\n", i, err);
+			goto out;
+		}
+
+		err = mbuf_printf(mb_resp, "%H",
+			httpauth_digest_response_print, resp);
+		if (err) {
+			DEBUG_WARNING("[%d] Could not"
+				" decode \"received\" response (%m)\n",
+				i, err);
+			goto out;
+		}
+
+		mbuf_set_pos(mb_resp, 0);
+		pl_set_mbuf(&plresp, mb_resp);
+		err = httpauth_digest_verify(req, &plresp,
+			&testv[i].method, testv[i].etag,
+			testv[i].user, testv[i].passwd, testv[i].entitybody);
+		if (err) {
+			DEBUG_WARNING("[%d]"
+				" Verification failed (%m)\n", i, err);
+			goto out;
+		}
+
+		mem_deref(req);
+		mem_deref(resp);
+		mem_deref(mb_req);
+		mem_deref(mb_resp);
+		continue;
+
+out:
+		mem_deref(req);
+		mem_deref(resp);
+		mem_deref(mb_req);
+		mem_deref(mb_resp);
 		break;
 	}
 

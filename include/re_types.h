@@ -47,16 +47,12 @@ typedef SSIZE_T ssize_t;
 /** Get number of elements in an array */
 #define RE_ARRAY_SIZE(a) ((sizeof(a))/(sizeof((a)[0])))
 
-/* Backwards compat */
-#define ARRAY_SIZE RE_ARRAY_SIZE
-
 
 /** Align a value to the boundary of mask */
 #define RE_ALIGN_MASK(x, mask)    (((x)+(mask))&~(mask))
 
 /** Check alignment of pointer (p) and byte count (c) **/
 #define re_is_aligned(p, c) (((uintptr_t)(const void *)(p)) % (c) == 0)
-#define is_aligned re_is_aligned
 
 /** Get the minimal value */
 #undef MIN
@@ -81,12 +77,15 @@ typedef SSIZE_T ssize_t;
 /** Defines a soft breakpoint */
 #if (defined(__i386__) || defined(__x86_64__))
 #define RE_BREAKPOINT __asm__("int $0x03")
-#else
-#define RE_BREAKPOINT
+#elif defined(__has_builtin)
+#if __has_builtin(__builtin_debugtrap)
+#define RE_BREAKPOINT __builtin_debugtrap()
+#endif
 #endif
 
-/* Backwards compat */
-#define BREAKPOINT RE_BREAKPOINT
+#ifndef RE_BREAKPOINT
+#define RE_BREAKPOINT
+#endif
 
 
 /* Error return/goto debug helpers */
@@ -301,7 +300,7 @@ typedef int re_sock_t;
 #define HAVE_RE_ARG 1
 
 #define RE_ARG_SIZE(type)                                                     \
-	_Generic((type),                                                      \
+	_Generic((0)?(type):(type),                                           \
 	bool:			sizeof(int),                                  \
 	char:			sizeof(int),                                  \
 	unsigned char:		sizeof(unsigned int),                         \
@@ -340,12 +339,31 @@ typedef int re_sock_t;
 #define RE_ARG_14(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_13(__VA_ARGS__)
 #define RE_ARG_15(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_14(__VA_ARGS__)
 #define RE_ARG_16(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_15(__VA_ARGS__)
+#define RE_ARG_17(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_16(__VA_ARGS__)
+#define RE_ARG_18(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_17(__VA_ARGS__)
+#define RE_ARG_19(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_18(__VA_ARGS__)
+#define RE_ARG_20(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_19(__VA_ARGS__)
+#define RE_ARG_21(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_20(__VA_ARGS__)
+#define RE_ARG_22(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_21(__VA_ARGS__)
+#define RE_ARG_23(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_22(__VA_ARGS__)
+#define RE_ARG_24(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_23(__VA_ARGS__)
+#define RE_ARG_25(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_24(__VA_ARGS__)
+#define RE_ARG_26(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_25(__VA_ARGS__)
+#define RE_ARG_27(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_26(__VA_ARGS__)
+#define RE_ARG_28(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_27(__VA_ARGS__)
+#define RE_ARG_29(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_28(__VA_ARGS__)
+#define RE_ARG_30(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_29(__VA_ARGS__)
+#define RE_ARG_31(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_30(__VA_ARGS__)
+#define RE_ARG_32(expr, ...) RE_ARG_SIZE(expr), (expr), RE_ARG_31(__VA_ARGS__)
 
-#define RE_ARG_VA_NUM_2(X, X16, X15, X14, X13, X12, X11, X10, X9, X8, X7, X6, \
-			X5, X4, X3, X2, X1, N, ...)                           \
+#define RE_ARG_VA_NUM_2(X, X32, X31, X30, X29, X28, X27, X26, X25, X24, X23,  \
+			X22, X21, X20, X19, X18, X17, X16, X15, X14, X13,     \
+			X12, X11, X10, X9, X8, X7, X6, X5, X4, X3, X2, X1, N, \
+			...)                                                  \
 	N
 #define RE_ARG_VA_NUM(...)                                                    \
-	RE_ARG_VA_NUM_2(0, ##__VA_ARGS__, 16, 15, 14, 13, 12, 11, \
+	RE_ARG_VA_NUM_2(0, ##__VA_ARGS__, 32, 31, 30, 29, 28, 27, 26, 25, 24, \
+			23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11,   \
 			10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
 
 #define RE_ARG_N3(N, ...) RE_ARG_##N(__VA_ARGS__)

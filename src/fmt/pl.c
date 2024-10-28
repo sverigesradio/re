@@ -21,6 +21,48 @@
 const struct pl pl_null = {NULL, 0};
 
 
+static void pl_alloc_destruct(void *arg)
+{
+	struct pl *pl = arg;
+
+	mem_deref((void *)pl->p);
+}
+
+
+/**
+ * Allocate a pointer-length object from a NULL-terminated string
+ *
+ * @param str NULL-terminated string
+ *
+ * @return Allocated Pointer-length object or NULL
+ */
+struct pl *pl_alloc_str(const char *str)
+{
+	struct pl *pl;
+
+	if (!str)
+		return NULL;
+
+	size_t sz = strlen(str);
+
+	pl = mem_zalloc(sizeof(struct pl), pl_alloc_destruct);
+	if (!pl)
+		return NULL;
+
+	pl->p = mem_alloc(sz, NULL);
+	if (!pl->p) {
+		mem_deref(pl);
+		return NULL;
+	}
+
+	memcpy((void *)pl->p, str, sz);
+
+	pl->l = sz;
+
+	return pl;
+}
+
+
 /**
  * Initialise a pointer-length object from a NULL-terminated string
  *
@@ -491,6 +533,28 @@ int pl_strcmp(const struct pl *pl, const char *str)
 	pl_set_str(&s, str);
 
 	return pl_cmp(pl, &s);
+}
+
+
+/**
+ * Compare n characters of a pointer-length object with a NULL-terminated
+ * string (case-sensitive)
+ *
+ * @param pl  Pointer-length object
+ * @param str NULL-terminated string
+ * @param n   number of characters that should be compared
+ *
+ * @return 0 if match, otherwise errorcode
+ */
+int pl_strncmp(const struct pl *pl, const char *str, size_t n)
+{
+	if (!pl_isset(pl) || !str || !n)
+		return EINVAL;
+
+	if (pl->l < n)
+		return EINVAL;
+
+	return strncmp(pl->p, str, n) == 0 ? 0 : EINVAL;
 }
 
 

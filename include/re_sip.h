@@ -150,6 +150,7 @@ enum {
 
 
 /** SIP Via header */
+#define RE_RFC3261_BRANCH_ID "z9hG4bK"
 struct sip_via {
 	struct pl sentby;
 	struct sa addr;
@@ -281,6 +282,7 @@ typedef int(sip_auth_h)(char **username, char **password, const char *realm,
 typedef bool(sip_hdr_h)(const struct sip_hdr *hdr, const struct sip_msg *msg,
 			void *arg);
 typedef void(sip_keepalive_h)(int err, void *arg);
+typedef int(digest_printf_h)(uint8_t *md, const char *fmt, ...);
 
 #define LIBRE_HAVE_SIPTRACE 1
 typedef void(sip_trace_h)(bool tx, enum sip_transp tp,
@@ -301,7 +303,7 @@ int  sip_debug(struct re_printf *pf, const struct sip *sip);
 int  sip_send(struct sip *sip, void *sock, enum sip_transp tp,
 	      const struct sa *dst, struct mbuf *mb);
 int  sip_send_conn(struct sip *sip, void *sock, enum sip_transp tp,
-		   const struct sa *dst, struct mbuf *mb,
+		   const struct sa *dst, char *host, struct mbuf *mb,
 		   sip_conn_h *connh, void *arg);
 void sip_set_trace_handler(struct sip *sip, sip_trace_h *traceh);
 
@@ -309,6 +311,8 @@ void sip_set_trace_handler(struct sip *sip, sip_trace_h *traceh);
 /* transport */
 int  sip_transp_add(struct sip *sip, enum sip_transp tp,
 		    const struct sa *laddr, ...);
+int  sip_transp_add_sock(struct sip *sip, enum sip_transp tp,
+			 bool listen, const struct sa *laddr, ...);
 int  sip_transp_add_websock(struct sip *sip, enum sip_transp tp,
 			    const struct sa *laddr,
 			    bool server, const char *cert, struct tls *tls);
@@ -344,6 +348,7 @@ int sip_drequestf(struct sip_request **reqp, struct sip *sip, bool stateful,
 void sip_request_cancel(struct sip_request *req);
 bool sip_request_loops(struct sip_loopstate *ls, uint16_t scode);
 void sip_loopstate_reset(struct sip_loopstate *ls);
+bool sip_request_provrecv(const struct sip_request *req);
 
 
 /* reply */
@@ -399,6 +404,7 @@ void sip_dialog_set_srcport(struct sip_dialog *dlg, uint16_t srcport);
 uint16_t sip_dialog_srcport(struct sip_dialog *dlg);
 const char *sip_dialog_uri(const struct sip_dialog *dlg);
 uint32_t sip_dialog_lseq(const struct sip_dialog *dlg);
+uint32_t sip_dialog_lseqinv(const struct sip_dialog *dlg);
 enum sip_transp sip_dialog_tp(const struct sip_dialog *dlg);
 bool sip_dialog_established(const struct sip_dialog *dlg);
 bool sip_dialog_cmp(const struct sip_dialog *dlg, const struct sip_msg *msg);
